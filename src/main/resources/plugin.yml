@@ -1,0 +1,8 @@
+name: Transcribe
+version: '${version}'
+main: org.eyman_.TranscribePlugin
+api-version: '1.21'
+author: Transcribe
+description: Transcribe - Voice-activated spell casting for Paper, powered by Simple Voice Chat and Vosk/external STT.
+depend: [voicechat]
+softdepend: [PlaceholderAPI]

@@ -1,0 +1,202 @@
+# =============================================================================
+#  Transcribe configuration
+# =============================================================================
+# This file is copied out of the plugin jar the first time Transcribe starts
+# (JavaPlugin#saveDefaultConfig) and is never overwritten automatically after
+# that, so it's safe to edit in place. Re-run `/transcribe reload` (or a
+# server restart) after changing anything here.
+#
+# YAML gotchas worth knowing before you edit this file:
+#   - Indentation is 2 spaces, and must be consistent - do not use tabs.
+#   - Strings containing `%`, `:` or leading/trailing spaces should be quoted,
+#     e.g. "effect give %player% minecraft:glowing 5 0 true".
+#   - Booleans are bare `true`/`false` (no quotes). Everything under
+#     `activation.placeholderapi.expected-value` is compared as a *string*,
+#     so quote it even though it reads like a boolean.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# engine: which speech-to-text backend transcribes captured voice audio, and
+#         how that backend is configured.
+# -----------------------------------------------------------------------------
+engine:
+
+  # Which SpeechRecognitionEngine implementation to use. One of:
+  #
+  #   INTERNAL - Embeds Vosk (JNI/native offline STT) directly in this JVM.
+  #     + No external process to run, deploy, or keep alive.
+  #     + No network hop, so lower latency and nothing to leak audio to.
+  #     - Uses server CPU/RAM for every recognition (mitigated heavily by the
+  #       constrained grammar below - idle cost is effectively zero).
+  #     - You must download and unpack a Vosk acoustic model onto this server
+  #       (see engine.internal.model-path).
+  #
+  #   EXTERNAL - Streams PCM audio to a separate STT microservice over a
+  #     WebSocket connection (see server.py shipped alongside this plugin for
+  #     a complete, drop-in reference implementation of that service).
+  #     + Keeps the Paper server's own CPU/RAM footprint minimal.
+  #     + The STT backend can be swapped, scaled, or run on dedicated/GPU
+  #       hardware independently of the Minecraft server.
+  #     - Adds a network hop (latency + a new failure mode to monitor).
+  #     - You are responsible for running, securing, and keeping that service
+  #       online (server.py is a reference/demo, not a hardened deployment).
+  #
+  # Changing this value requires a plugin reload/restart to take effect.
+  mode: INTERNAL
+
+  # The sample rate, in Hz, that captured PCM audio is delivered at before
+  # being handed to either engine. Both engines resample internally if their
+  # own expected rate differs (Vosk models almost always expect 16000; the
+  # bundled server.py reference implementation also defaults to 16000), so
+  # you generally only need to change this if you know Simple Voice Chat's
+  # capture pipeline on your server is configured differently.
+  sample-rate-hertz: 16000
+
+  # ---------------------------------------------------------------------------
+  # engine.internal: settings used only when engine.mode is INTERNAL.
+  # ---------------------------------------------------------------------------
+  internal:
+
+    # Path to an *unpacked* Vosk model directory (the folder containing
+    # am/, graph/, conf/, etc.), resolved relative to this plugin's own data
+    # folder - i.e. plugins/Transcribe/<model-path>.
+    #
+    # Download a model from https://alphacephei.com/vosk/models - for a
+    # keyword-only grammar like this plugin uses, one of the small ~40-50MB
+    # models (e.g. vosk-model-small-en-us-0.15) is more than sufficient;
+    # you do not need a large general-purpose model.
+    model-path: models/vosk-model-small-en-us
+
+    # The constrained vocabulary the recognizer is limited to. This is the
+    # single biggest lever on both CPU usage and recognition accuracy:
+    # restricting Vosk to a handful of words (rather than its full open
+    # vocabulary) collapses the decoder's search space to almost nothing,
+    # which is what keeps idle/background CPU usage near zero even while
+    # actively listening.
+    #
+    # Rules of thumb when choosing words:
+    #   - Prefer short, phonetically distinct words. "ignis" and "lumos" are
+    #     easy for the recognizer to tell apart; "fire" and "fyre" are not.
+    #   - Every word here should correspond to something your server actually
+    #     reacts to (see recognition.console-commands below, or a listener
+    #     for VoiceWordSpokenEvent registered by another plugin).
+    #   - Casing doesn't matter; everything is normalized to lowercase.
+    #   - This list feeds directly into Vosk's JSON grammar array, e.g.
+    #     ["ignis", "lumos", "glacio"] - keep entries simple, single words.
+    grammar:
+      - ignis    # example: fire/damage spell
+      - lumos    # example: light-giving spell
+      - glacio   # example: ice/slow spell
+
+  # ---------------------------------------------------------------------------
+  # engine.external: settings used only when engine.mode is EXTERNAL.
+  # ---------------------------------------------------------------------------
+  external:
+
+    # ws:// (plain) or wss:// (TLS) URI of the external STT microservice.
+    # The bundled server.py listens on ws://<host>:2700 by default, matching
+    # this default. If the microservice is not on the same machine/network
+    # as this Paper server, strongly prefer wss:// with a reverse proxy
+    # terminating TLS (raw, unencrypted voice audio should never cross an
+    # untrusted network).
+    uri: ws://localhost:2700
+
+    # How long, in milliseconds, Transcribe will wait for a transcription
+    # result after sending a segment before giving up on that one request.
+    # This bounds worst-case latency if the remote service hangs or the
+    # connection silently drops; it does not affect already-completed
+    # requests or healthy connections.
+    request-timeout-millis: 5000
+
+
+# -----------------------------------------------------------------------------
+# activation: what opens a player's "Listen Window" - the short interval
+#             during which their voice audio is actually decoded instead of
+#             being dropped at the network layer. There are four independent
+#             triggers; any one of them opens (or refreshes) the window.
+# -----------------------------------------------------------------------------
+activation:
+
+  # How long a triggered Listen Window stays open, in seconds. Voice audio
+  # captured after this expires is dropped again until the next trigger.
+  # Keep this just long enough to comfortably say one spell word - 3 seconds
+  # is a sensible default; going much higher increases the amount of audio
+  # processed per cast for little practical benefit.
+  window-seconds: 3.0
+
+  # --- Fixed keybind triggers (not configurable, listed here for reference) ---
+  #   SHIFT+Q  - dropping your held item stack while sneaking (the vanilla
+  #              "control-drop" gesture: hold Shift, press Q).
+  #   SHIFT+F  - swapping main-hand/off-hand items while sneaking (hold
+  #              Shift, press F, the vanilla swap-hands keybind).
+  # These two are intentionally hard-wired (not exposed below) because they
+  # reuse existing vanilla keybinds rather than requiring a client mod for a
+  # custom one, and gating them on sneaking avoids false triggers during
+  # normal inventory management. They cannot be disabled individually; set
+  # window-seconds very low if you want to effectively neuter them.
+
+  # --- Configurable hotbar-slot trigger ---
+  # 0-based hotbar slot (0-8, left to right) that opens a Listen Window the
+  # moment a player selects it (scroll wheel or number key). Set to -1 to
+  # disable this trigger entirely. Example: give players a "wand" item bound
+  # to slot 4 (the 5th slot) and set this to 4, so equipping the wand opens
+  # the window automatically.
+  hotbar-slot: -1
+
+  # --- Configurable PlaceholderAPI condition trigger ---
+  # Requires PlaceholderAPI to be installed (soft dependency - Transcribe
+  # runs fine without it, this trigger is simply disabled). Every
+  # poll-interval-ticks, Transcribe resolves `placeholder` for each online
+  # player and opens a Listen Window if the resolved text case-insensitively
+  # equals `expected-value`. This lets *any* other plugin drive activation
+  # just by exposing a placeholder - e.g. a permissions node, a scoreboard
+  # value, a custom "casting stance" state tracked by another plugin, etc.
+  placeholderapi:
+
+    # A PlaceholderAPI expression, e.g. "%someplugin_casting%". Leave blank
+    # ('') to disable this trigger even if PlaceholderAPI is installed.
+    placeholder: ''
+
+    # The value `placeholder` must resolve to (compared case-insensitively)
+    # to count as an activation. Must be quoted - it's compared as text, not
+    # parsed as a YAML boolean.
+    expected-value: 'true'
+
+    # How often, in server ticks (20 ticks = 1 second), to re-check the
+    # placeholder for every online player. Lower = more responsive, higher
+    # = less overhead. 10 ticks (twice a second) is a reasonable default for
+    # a condition that isn't expected to change from tick to tick.
+    poll-interval-ticks: 10
+
+
+# -----------------------------------------------------------------------------
+# recognition: what happens when the active engine successfully recognizes
+#              an in-grammar keyword from a player's captured audio.
+# -----------------------------------------------------------------------------
+recognition:
+
+  # Console commands dispatched (as the server console, i.e. full permission)
+  # once per recognized keyword, in the order listed. VoiceWordSpokenEvent is
+  # always fired first and can be cancelled by another plugin to suppress
+  # this dispatch entirely (e.g. to implement cooldowns, mana costs, or
+  # silencing effects) - if it's cancelled, none of these commands run.
+  #
+  # Two placeholders are substituted in every command before it runs:
+  #   %player%   -> the exact in-game name of the player who spoke
+  #   %keyword%  -> the recognized keyword (always one entry from
+  #                 engine.internal.grammar / whatever your external service
+  #                 returns), always lowercase
+  #
+  # This example plainly applies a visible effect for every recognized word
+  # regardless of which one it was; a real spell setup would typically use a
+  # dispatcher command/plugin that branches on %keyword% (or register
+  # multiple VoiceWordSpokenEvent listeners that check getKeyword()) rather
+  # than hard-coding one command per spell here - but simple per-keyword
+  # entries work fine too, for example:
+  #   - "execute if score %player% transcribe_keyword_ignis matches 1 run ..."
+  # or, more simply, running a single command that always delegates the
+  # branching logic to another plugin:
+  #   - "spellcast trigger %player% %keyword%"
+  console-commands:
+    - "effect give %player% minecraft:glowing 5 0 true"

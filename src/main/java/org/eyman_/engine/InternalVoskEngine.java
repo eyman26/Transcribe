@@ -1,0 +1,272 @@
+package org.eyman_.engine;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import org.jetbrains.annotations.NotNull;
+import org.vosk.LibVosk;
+import org.vosk.LogLevel;
+import org.vosk.Model;
+import org.vosk.Recognizer;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Path;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+/**
+ * In-process speech recognition engine backed by the Vosk JNI bindings ({@code org.vosk:vosk}).
+ *
+ * <p>A single shared {@link Model} (acoustic model + decoding graph, loaded once from disk) is
+ * reused for the plugin's entire lifetime &mdash; {@code Model} instances are read-only and safe
+ * to spawn many recognizers from concurrently. Each call to
+ * {@link #processAudio(UUID, short[], int)} allocates a fresh, short-lived {@link Recognizer}
+ * scoped to exactly one Listen Window capture, constrained to the plugin's spell-word grammar.
+ * Recognizers themselves are stateful/streaming and are <em>not</em> safe to share across
+ * concurrent utterances, so per-call recognizers are what gives this engine full thread safety
+ * across many simultaneously-speaking players without any explicit locking.</p>
+ *
+ * <p>Per the architecture spec, the recognizer is initialized with a restricted JSON grammar
+ * array (e.g. {@code ["ignis", "lumos", "glacio"]}) instead of Vosk's full open vocabulary,
+ * which collapses the decoder's search space and keeps idle/background CPU usage near zero.</p>
+ */
+public final class InternalVoskEngine implements SpeechRecognitionEngine {
+
+    /** Sample rate almost every published Vosk acoustic model is trained at. */
+    private static final int DEFAULT_TARGET_SAMPLE_RATE_HZ = 16_000;
+
+    /** Sentinel Vosk emits for out-of-grammar audio; always filtered out of results. */
+    private static final String UNKNOWN_TOKEN = "[unk]";
+
+    private final Gson gson = new Gson();
+    private final Logger logger;
+    private final Model model;
+    private final String grammarJson;
+    private final Set<String> allowedKeywords;
+    private final int targetSampleRateHz;
+    private final ExecutorService recognitionExecutor;
+    private volatile boolean shutdown;
+
+    /**
+     * @param modelDirectory     path to an unpacked Vosk model directory (contains {@code am/},
+     *                           {@code graph/}, {@code conf/}, etc.)
+     * @param vocabulary         the restricted set of spell keywords this engine should recognize;
+     *                           must not be empty
+     * @param targetSampleRateHz the sample rate, in Hz, the underlying model was trained at
+     *                           (almost always {@code 16000} for stock Vosk models)
+     * @param logger             logger used for lifecycle and error messages
+     * @throws IOException if the model directory is missing or cannot be loaded by the native library
+     */
+    public InternalVoskEngine(@NotNull final Path modelDirectory,
+                               @NotNull final List<String> vocabulary,
+                               final int targetSampleRateHz,
+                               @NotNull final Logger logger) throws IOException {
+        Objects.requireNonNull(modelDirectory, "modelDirectory");
+        Objects.requireNonNull(vocabulary, "vocabulary");
+        this.logger = Objects.requireNonNull(logger, "logger");
+
+        if (vocabulary.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "vocabulary must not be empty - an unconstrained Vosk grammar defeats the CPU-gating design goal.");
+        }
+        if (targetSampleRateHz <= 0) {
+            throw new IllegalArgumentException("targetSampleRateHz must be positive, was: " + targetSampleRateHz);
+        }
+        if (!modelDirectory.toFile().isDirectory()) {
+            throw new IOException("Vosk model directory does not exist or is not a directory: " + modelDirectory);
+        }
+
+        // Quiet down Vosk's native Kaldi logging; it writes directly to stderr otherwise.
+        LibVosk.setLogLevel(LogLevel.WARNINGS);
+
+        this.model = new Model(modelDirectory.toAbsolutePath().toString());
+        this.allowedKeywords = buildAllowedKeywordSet(vocabulary);
+        this.grammarJson = buildGrammarJson(allowedKeywords);
+        this.targetSampleRateHz = targetSampleRateHz;
+        this.recognitionExecutor = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("transcribe-vosk-worker-", 0).factory());
+
+        this.logger.info(() -> "InternalVoskEngine ready. grammar=" + grammarJson
+                + " targetSampleRateHz=" + targetSampleRateHz);
+    }
+
+    /**
+     * Convenience constructor using {@link #DEFAULT_TARGET_SAMPLE_RATE_HZ} (16 kHz), the sample
+     * rate almost every published Vosk model expects.
+     */
+    public InternalVoskEngine(@NotNull final Path modelDirectory,
+                               @NotNull final List<String> vocabulary,
+                               @NotNull final Logger logger) throws IOException {
+        this(modelDirectory, vocabulary, DEFAULT_TARGET_SAMPLE_RATE_HZ, logger);
+    }
+
+    @Override
+    @NotNull
+    public CompletableFuture<String> processAudio(@NotNull final UUID playerId,
+                                                    @NotNull final short[] pcm16Samples,
+                                                    final int sampleRateHertz) {
+        Objects.requireNonNull(playerId, "playerId");
+        Objects.requireNonNull(pcm16Samples, "pcm16Samples");
+
+        if (shutdown) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("InternalVoskEngine has already been shut down."));
+        }
+        if (pcm16Samples.length == 0) {
+            return CompletableFuture.completedFuture("");
+        }
+
+        return CompletableFuture.supplyAsync(
+                () -> recognizeBlocking(playerId, pcm16Samples, sampleRateHertz), recognitionExecutor);
+    }
+
+    /**
+     * Runs entirely on a virtual worker thread. Safe to block here; this never touches the
+     * main server thread, and each invocation owns its own {@link Recognizer} instance.
+     */
+    @NotNull
+    private String recognizeBlocking(@NotNull final UUID playerId,
+                                      @NotNull final short[] rawSamples,
+                                      final int sourceSampleRateHertz) {
+        final short[] samples = (sourceSampleRateHertz == targetSampleRateHz)
+                ? rawSamples
+                : resampleLinear(rawSamples, sourceSampleRateHertz, targetSampleRateHz);
+
+        try (Recognizer recognizer = new Recognizer(model, targetSampleRateHz)) {
+            recognizer.setGrammar(grammarJson);
+            recognizer.setWords(true);
+
+            final byte[] pcmBytes = shortsToLittleEndianBytes(samples);
+            recognizer.acceptWaveForm(pcmBytes, pcmBytes.length);
+
+            final String resultJson = recognizer.getFinalResult();
+            return extractRecognizedKeyword(resultJson);
+        } catch (final IOException e) {
+            logger.log(Level.WARNING, "Vosk recognizer failed for player " + playerId, e);
+            throw new CompletionException(e);
+        }
+    }
+
+    /**
+     * Parses Vosk's {@code {"text": "..."}} result JSON and returns the recognized keyword only
+     * if it is an exact, single member of the constrained grammar; the Vosk unknown-token
+     * sentinel and anything else are normalized to an empty string.
+     */
+    @NotNull
+    private String extractRecognizedKeyword(@NotNull final String resultJson) {
+        final String text = switch (safeParseText(resultJson)) {
+            case null -> "";
+            case String t -> t.trim().toLowerCase(Locale.ROOT);
+        };
+
+        if (text.isEmpty() || text.equals(UNKNOWN_TOKEN)) {
+            return "";
+        }
+        return allowedKeywords.contains(text) ? text : "";
+    }
+
+    private String safeParseText(@NotNull final String resultJson) {
+        try {
+            final JsonObject obj = JsonParser.parseString(resultJson).getAsJsonObject();
+            if (obj.has("text") && !obj.get("text").isJsonNull()) {
+                return obj.get("text").getAsString();
+            }
+            return "";
+        } catch (final RuntimeException malformed) {
+            return "";
+        }
+    }
+
+    @NotNull
+    private static Set<String> buildAllowedKeywordSet(@NotNull final List<String> vocabulary) {
+        final Set<String> normalized = new LinkedHashSet<>(vocabulary.size());
+        for (final String word : vocabulary) {
+            normalized.add(word.toLowerCase(Locale.ROOT).trim());
+        }
+        return Set.copyOf(normalized);
+    }
+
+    @NotNull
+    private String buildGrammarJson(@NotNull final Set<String> vocabulary) {
+        final LinkedHashSet<String> words = new LinkedHashSet<>(vocabulary);
+        words.add(UNKNOWN_TOKEN);
+        final JsonArray array = new JsonArray();
+        words.forEach(array::add);
+        return gson.toJson(array);
+    }
+
+    /**
+     * Naive linear-interpolation resampler. Not audiophile quality, but more than sufficient
+     * for feeding a constrained-grammar keyword recognizer &mdash; Simple Voice Chat typically
+     * captures at 48kHz, and this only needs enough fidelity to distinguish a handful of spell
+     * words, not to reproduce music.
+     */
+    @NotNull
+    private static short[] resampleLinear(@NotNull final short[] input, final int fromHz, final int toHz) {
+        if (input.length == 0 || fromHz == toHz) {
+            return input;
+        }
+        final double ratio = (double) toHz / (double) fromHz;
+        final int outputLength = Math.max(1, (int) Math.round(input.length * ratio));
+        final short[] output = new short[outputLength];
+
+        for (int i = 0; i < outputLength; i++) {
+            final double sourceIndex = i / ratio;
+            final int lowIndex = Math.min((int) Math.floor(sourceIndex), input.length - 1);
+            final int highIndex = Math.min(lowIndex + 1, input.length - 1);
+            final double fraction = sourceIndex - lowIndex;
+            final double interpolated = input[lowIndex] + (input[highIndex] - input[lowIndex]) * fraction;
+            output[i] = (short) Math.round(interpolated);
+        }
+        return output;
+    }
+
+    @NotNull
+    private static byte[] shortsToLittleEndianBytes(@NotNull final short[] samples) {
+        final ByteBuffer buffer = ByteBuffer.allocate(samples.length * 2).order(ByteOrder.LITTLE_ENDIAN);
+        for (final short sample : samples) {
+            buffer.putShort(sample);
+        }
+        return buffer.array();
+    }
+
+    @Override
+    public void shutdown() {
+        if (shutdown) {
+            return;
+        }
+        shutdown = true;
+
+        recognitionExecutor.shutdown();
+        try {
+            if (!recognitionExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                recognitionExecutor.shutdownNow();
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            recognitionExecutor.shutdownNow();
+        }
+
+        try {
+            model.close();
+        } catch (final RuntimeException e) {
+            logger.log(Level.WARNING, "Error closing Vosk model", e);
+        }
+
+        logger.info("InternalVoskEngine shut down cleanly.");
+    }
+}
