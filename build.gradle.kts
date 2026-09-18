@@ -35,7 +35,7 @@ dependencies {
 
     compileOnly("org.jetbrains:annotations:26.0.1")
 
-    compileOnly("de.maxhenkel.voicechat:voicechat-api:2.5.27")
+    compileOnly("de.maxhenkel.voicechat:voicechat-api:2.6.20")
 
     compileOnly("me.clip:placeholderapi:2.11.6")
 
