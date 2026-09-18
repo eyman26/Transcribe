@@ -37,7 +37,7 @@ dependencies {
 
     compileOnly("de.maxhenkel.voicechat:voicechat-api:2.5.27")
 
-    compileOnly("me.clip:placeholderapi:2.11.6")
+    compileOnly("me.clip:placeholderapi:2.12.3")
 
     implementation("com.alphacephei:vosk:0.3.45")
     implementation("net.java.dev.jna:jna:5.14.0")
