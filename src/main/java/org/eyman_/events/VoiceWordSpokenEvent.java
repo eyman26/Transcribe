@@ -7,9 +7,8 @@ import org.bukkit.event.HandlerList;
 import org.jetbrains.annotations.NotNull;
 
 /**
- * Fired on the main thread when the active engine transcribes a keyword from a player's Listen
- * Window. STT worker threads must never {@code callEvent} directly &mdash; they must schedule back
- * onto the main thread first. Cancelling prevents downstream spell-casting logic for this utterance.
+ * Fired on the main thread when a keyword is transcribed. Cancelling prevents the downstream
+ * spell-cast. STT worker threads must schedule this event onto the main thread first.
  */
 public final class VoiceWordSpokenEvent extends Event implements Cancellable {
 
@@ -20,15 +19,8 @@ public final class VoiceWordSpokenEvent extends Event implements Cancellable {
     private final float confidence;
     private boolean cancelled;
 
-    /**
-     * @param player     the player whose voice audio produced this transcription; never null
-     * @param keyword    the recognized keyword, normalized to lowercase and matched against
-     *                   the constrained grammar array configured for the active engine; never null
-     * @param confidence the engine-reported confidence score for this recognition, in the
-     *                   inclusive range {@code [0.0f, 1.0f]}
-     */
     public VoiceWordSpokenEvent(@NotNull final Player player, @NotNull final String keyword, final float confidence) {
-        super(false); // always fired synchronously, on the main thread
+        super(false);
         this.player = player;
         this.keyword = keyword;
         this.confidence = confidence;

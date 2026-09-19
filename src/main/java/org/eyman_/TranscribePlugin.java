@@ -22,12 +22,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.logging.Level;
 
-/**
- * Main Paper plugin entry point: wires up Simple Voice Chat, the configured
- * {@link SpeechRecognitionEngine}, and the {@link ActivationManager}.
- */
 public final class TranscribePlugin extends JavaPlugin {
 
     private static final String SIMPLE_VOICE_CHAT_PLUGIN_NAME = "voicechat";
@@ -37,7 +34,7 @@ public final class TranscribePlugin extends JavaPlugin {
     private ActivationManager activationManager;
     private List<String> consoleCommandTemplates = List.of();
 
-    /** Set once Simple Voice Chat calls back into {@link TranscribeVoicechatHook#initialize}. */
+    // Populated by the VoicechatPlugin hook below.
     private volatile VoicechatApi voicechatApi;
 
     @Override
@@ -93,12 +90,7 @@ public final class TranscribePlugin extends JavaPlugin {
         getLogger().info("Transcribe disabled.");
     }
 
-    /**
-     * Registers this plugin with Simple Voice Chat's {@link BukkitVoicechatService}, the
-     * standard integration point third-party plugins use to hook into SVC's audio pipeline.
-     *
-     * @return {@code true} if the service was found and registration succeeded
-     */
+    // Registers with Simple Voice Chat's Bukkit service, the standard third-party integration point.
     private boolean registerVoicechatServiceHook() {
         final BukkitVoicechatService service = getServer().getServicesManager().load(BukkitVoicechatService.class);
         if (service == null) {
@@ -111,10 +103,6 @@ public final class TranscribePlugin extends JavaPlugin {
         return true;
     }
 
-    /**
-     * Builds the {@link SpeechRecognitionEngine} selected by {@code engine.mode} in
-     * {@code config.yml} ({@code INTERNAL} or {@code EXTERNAL}).
-     */
     @NotNull
     private SpeechRecognitionEngine buildConfiguredEngine() throws IOException {
         final String mode = getConfig().getString("engine.mode", "INTERNAL").toUpperCase(Locale.ROOT);
@@ -138,33 +126,48 @@ public final class TranscribePlugin extends JavaPlugin {
         };
     }
 
-    /**
-     * Builds the {@link ActivationManager} from {@code config.yml}'s {@code activation} section.
-     */
     @NotNull
     private ActivationManager buildActivationManager() {
         final Duration windowDuration = Duration.ofMillis(
                 Math.round(getConfig().getDouble("activation.window-seconds", 3.0) * 1000.0));
-        final int hotbarSlot = getConfig().getInt("activation.hotbar-slot", -1);
+
+        final List<String> rawTriggers = getConfig().getStringList("activation.triggers");
+        final Set<ActivationManager.TriggerType> enabledTriggers = java.util.EnumSet.noneOf(ActivationManager.TriggerType.class);
+
+        for (final String rawTrigger : rawTriggers) {
+            final ActivationManager.TriggerType type = ActivationManager.TriggerType.parse(rawTrigger);
+            if (type != null) {
+                enabledTriggers.add(type);
+            } else {
+                getLogger().warning("Unknown activation trigger type in config.yml: '" + rawTrigger + "'");
+            }
+        }
+
+        // Config slots are 1-indexed (1-9), Bukkit slots are 0-indexed (0-8).
+        final List<Integer> hotbarSlots = getConfig().getIntegerList("activation.hotbar-slots").stream()
+                .map(slot -> slot - 1)
+                .filter(slot -> slot >= 0 && slot <= 8)
+                .toList();
+
+        final boolean cancelTriggerEvents = getConfig().getBoolean("activation.cancel-trigger-events", true);
+        final boolean enableActionBar = getConfig().getBoolean("activation.feedback.actionbar", true);
+        final boolean enableSoundCues = getConfig().getBoolean("activation.feedback.sound", true);
+
         final String rawPlaceholder = getConfig().getString("activation.placeholderapi.placeholder", "");
         final String papiPlaceholder = (rawPlaceholder == null || rawPlaceholder.isBlank()) ? null : rawPlaceholder;
         final String papiExpectedValue = getConfig().getString("activation.placeholderapi.expected-value", "true");
         final long papiPollIntervalTicks = getConfig().getLong("activation.placeholderapi.poll-interval-ticks", 10);
 
         final ActivationManager.ActivationConfig activationConfig = new ActivationManager.ActivationConfig(
-                windowDuration, hotbarSlot, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks);
+                windowDuration, enabledTriggers, hotbarSlots, cancelTriggerEvents,
+                enableActionBar, enableSoundCues, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks);
 
         return new ActivationManager(this, activationConfig);
     }
 
     /**
-     * Single, thread-safe entry point for reporting that {@code keyword} was recognized from
-     * {@code player}'s voice audio. Safe to call from any thread &mdash; including the async
-     * worker threads used by both {@link SpeechRecognitionEngine} implementations.
-     *
-     * @param player     the player whose speech was recognized; ignored if no longer online
-     * @param keyword    the recognized, in-grammar keyword
-     * @param confidence the engine-reported confidence score, {@code [0.0, 1.0]}
+     * Thread-safe: recognized speech from any thread is marshalled onto the main thread before
+     * firing {@link VoiceWordSpokenEvent}.
      */
     public void handleRecognizedSpeech(@NotNull final Player player, @NotNull final String keyword, final float confidence) {
         if (!getServer().isPrimaryThread()) {
@@ -204,12 +207,8 @@ public final class TranscribePlugin extends JavaPlugin {
     }
 
     /**
-     * Reloads {@code config.yml} and rebuilds the speech recognition engine and
-     * {@link ActivationManager} from it. Uses a build-before-swap sequence: the replacement
-     * engine and activation manager are fully constructed against the freshly reloaded config
-     * <em>before</em> anything currently running is torn down, so a bad edit (a missing Vosk
-     * model, an invalid activation slot, etc.) leaves the previous, working configuration
-     * running untouched instead of leaving the plugin half-disabled.
+     * Builds the replacement engine and activation manager against the reloaded config before
+     * tearing anything down, so a bad config leaves the previous working setup untouched.
      */
     private void reload(@NotNull final CommandSender sender) {
         reloadConfig();
@@ -228,14 +227,13 @@ public final class TranscribePlugin extends JavaPlugin {
         try {
             newActivationManager = buildActivationManager();
         } catch (final IllegalArgumentException badConfig) {
-            newEngine.shutdown(); // don't leak the engine we just built but won't end up using
+            newEngine.shutdown(); // don't leak the engine we just built but won't use
             getLogger().log(Level.SEVERE, "Reload failed due to invalid activation configuration - "
                     + "keeping the previous configuration running.", badConfig);
             sender.sendMessage("Reload failed: " + badConfig.getMessage() + " (see console; previous configuration is still running)");
             return;
         }
 
-        // Both replacements built successfully - safe to swap out whatever was running before.
         final SpeechRecognitionEngine oldEngine = this.speechEngine;
         final ActivationManager oldActivationManager = this.activationManager;
 
@@ -255,7 +253,7 @@ public final class TranscribePlugin extends JavaPlugin {
         sender.sendMessage("Transcribe configuration reloaded.");
     }
 
-    /** Must only be called on the main thread. */
+    // Must only be called on the main thread.
     private void dispatchConfiguredCommands(@NotNull final Player player, @NotNull final String keyword) {
         if (consoleCommandTemplates.isEmpty()) {
             return;
@@ -277,9 +275,7 @@ public final class TranscribePlugin extends JavaPlugin {
         return speechEngine;
     }
 
-    /**
-     * Captures the {@link VoicechatApi} reference for the audio-frame ingestion pipeline.
-     */
+    // Captures the VoicechatApi reference for the audio-frame ingestion pipeline.
     private final class TranscribeVoicechatHook implements VoicechatPlugin {
 
         @Override

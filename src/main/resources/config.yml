@@ -3,23 +3,19 @@
 # =============================================================================
 # This file is copied out of the plugin jar the first time Transcribe starts
 # (JavaPlugin#saveDefaultConfig) and is never overwritten automatically after
-# that, so it's safe to edit in place. Re-run `/transcribe reload` (or a
+# that, so it's safe to edit in place. Re-run /transcribe reload (or a
 # server restart) after changing anything here.
 #
 # YAML gotchas worth knowing before you edit this file:
-#   - Indentation is 2 spaces, and must be consistent - do not use tabs.
+#   - Indentation is 2 spaces, and must be consistent and do not use tabs.
 #   - Strings containing `%`, `:` or leading/trailing spaces should be quoted,
 #     e.g. "effect give %player% minecraft:glowing 5 0 true".
 #   - Booleans are bare `true`/`false` (no quotes). Everything under
 #     `activation.placeholderapi.expected-value` is compared as a *string*,
 #     so quote it even though it reads like a boolean.
-# =============================================================================
 
-
-# -----------------------------------------------------------------------------
-# engine: which speech-to-text backend transcribes captured voice audio, and
-#         how that backend is configured.
-# -----------------------------------------------------------------------------
+# which speech-to-text backend transcribes captured voice audio, and
+# how that backend is configured.
 engine:
 
   # Which SpeechRecognitionEngine implementation to use. One of:
@@ -53,19 +49,16 @@ engine:
   # capture pipeline on your server is configured differently.
   sample-rate-hertz: 16000
 
-  # ---------------------------------------------------------------------------
-  # engine.internal: settings used only when engine.mode is INTERNAL.
-  # ---------------------------------------------------------------------------
+  # settings used only when engine.mode is INTERNAL.
   internal:
 
     # Path to an *unpacked* Vosk model directory (the folder containing
     # am/, graph/, conf/, etc.), resolved relative to this plugin's own data
     # folder - i.e. plugins/Transcribe/<model-path>.
-    #
-    # Download a model from https://alphacephei.com/vosk/models - for a
-    # keyword-only grammar like this plugin uses, one of the small ~40-50MB
-    # models (e.g. vosk-model-small-en-us-0.15) is more than sufficient;
-    # you do not need a large general-purpose model.
+    # Download a model from https://alphacephei.com/vosk/models, for a
+    # keyword only grammar like this plugin uses, one of the small ~40-50MB
+    # models (e.g. vosk-model-small-en-us-0.15) is more than sufficient.
+    # You do not need a large general-purpose model.
     model-path: models/vosk-model-small-en-us
 
     # The constrained vocabulary the recognizer is limited to. This is the
@@ -89,9 +82,7 @@ engine:
       - lumos    # example: light-giving spell
       - glacio   # example: ice/slow spell
 
-  # ---------------------------------------------------------------------------
-  # engine.external: settings used only when engine.mode is EXTERNAL.
-  # ---------------------------------------------------------------------------
+  # settings used only when engine.mode is EXTERNAL.
   external:
 
     # ws:// (plain) or wss:// (TLS) URI of the external STT microservice.
@@ -110,70 +101,48 @@ engine:
     request-timeout-millis: 5000
 
 
-# -----------------------------------------------------------------------------
-# activation: what opens a player's "Listen Window" - the short interval
-#             during which their voice audio is actually decoded instead of
-#             being dropped at the network layer. There are four independent
-#             triggers; any one of them opens (or refreshes) the window.
-# -----------------------------------------------------------------------------
+#  what opens a player's "Listen Window" - the short interval during which their voice audio is captured and decoded.            
 activation:
 
-  # How long a triggered Listen Window stays open, in seconds. Voice audio
-  # captured after this expires is dropped again until the next trigger.
-  # Keep this just long enough to comfortably say one spell word - 3 seconds
-  # is a sensible default; going much higher increases the amount of audio
-  # processed per cast for little practical benefit.
+  # How long a triggered Listen Window stays open, in seconds.
   window-seconds: 3.0
 
-  # --- Fixed keybind triggers (not configurable, listed here for reference) ---
-  #   SHIFT+Q  - dropping your held item stack while sneaking (the vanilla
-  #              "control-drop" gesture: hold Shift, press Q).
-  #   SHIFT+F  - swapping main-hand/off-hand items while sneaking (hold
-  #              Shift, press F, the vanilla swap-hands keybind).
-  # These two are intentionally hard-wired (not exposed below) because they
-  # reuse existing vanilla keybinds rather than requiring a client mod for a
-  # custom one, and gating them on sneaking avoids false triggers during
-  # normal inventory management. They cannot be disabled individually; set
-  # window-seconds very low if you want to effectively neuter them.
+  # Active client action triggers. Options:
+  #   - SWAP_HAND          (Pressing F)
+  #   - SNEAK_SWAP_HAND    (Pressing Shift + F)
+  #   - DROP_ITEM          (Pressing Q)
+  #   - SNEAK_DROP_ITEM    (Pressing Shift + Q)
+  #   - LEFT_CLICK         (Left Clicking)
+  #   - SNEAK_LEFT_CLICK   (Pressing Shift + Left Click)
+  #   - RIGHT_CLICK        (Right Clicking)
+  #   - SNEAK_RIGHT_CLICK  (Pressing Shift + Right Click)
+  #   - HOTBAR_SLOT        (Switching to slots in hotbar-slots below)
+  triggers:
+    - "SNEAK_SWAP_HAND"
+    - "SNEAK_DROP_ITEM"
 
-  # --- Configurable hotbar-slot trigger ---
-  # 0-based hotbar slot (0-8, left to right) that opens a Listen Window the
-  # moment a player selects it (scroll wheel or number key). Set to -1 to
-  # disable this trigger entirely. Example: give players a "wand" item bound
-  # to slot 4 (the 5th slot) and set this to 4, so equipping the wand opens
-  # the window automatically.
-  hotbar-slot: -1
+  # Active when HOTBAR_SLOT is included in triggers. Hotbar slots 1 through 9.
+  hotbar-slots:
+    - 9
 
-  # --- Configurable PlaceholderAPI condition trigger ---
-  # Requires PlaceholderAPI to be installed (soft dependency - Transcribe
-  # runs fine without it, this trigger is simply disabled). Every
-  # poll-interval-ticks, Transcribe resolves `placeholder` for each online
-  # player and opens a Listen Window if the resolved text case-insensitively
-  # equals `expected-value`. This lets *any* other plugin drive activation
-  # just by exposing a placeholder - e.g. a permissions node, a scoreboard
-  # value, a custom "casting stance" state tracked by another plugin, etc.
+  # Whether gesture actions (like Swap Hand F or Drop Item Q) should be cancelled 
+  # so players don't actually drop items/swap hands when triggering activation.
+  cancel-trigger-events: true
+
+  # Visual and auditory feedback when a Listen Window opens.
+  feedback:
+    actionbar: true
+    sound: true
+
+  # PlaceholderAPI Condition Trigger 
   placeholderapi:
-
-    # A PlaceholderAPI expression, e.g. "%someplugin_casting%". Leave blank
-    # ('') to disable this trigger even if PlaceholderAPI is installed.
     placeholder: ''
-
-    # The value `placeholder` must resolve to (compared case-insensitively)
-    # to count as an activation. Must be quoted - it's compared as text, not
-    # parsed as a YAML boolean.
     expected-value: 'true'
-
-    # How often, in server ticks (20 ticks = 1 second), to re-check the
-    # placeholder for every online player. Lower = more responsive, higher
-    # = less overhead. 10 ticks (twice a second) is a reasonable default for
-    # a condition that isn't expected to change from tick to tick.
     poll-interval-ticks: 10
 
 
-# -----------------------------------------------------------------------------
-# recognition: what happens when the active engine successfully recognizes
-#              an in-grammar keyword from a player's captured audio.
-# -----------------------------------------------------------------------------
+# what happens when the active engine successfully recognizes
+#  an in-grammar keyword from a player's captured audio.
 recognition:
 
   # Console commands dispatched (as the server console, i.e. full permission)

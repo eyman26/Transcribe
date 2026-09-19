@@ -29,17 +29,16 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * In-process STT via the Vosk JNI bindings. Shares one read-only {@link Model} for the plugin's
- * lifetime, but allocates a fresh {@link Recognizer} per Listen Window, constrained to the spell
- * grammar; that per-call recognizer is what makes the engine thread-safe across concurrent
+ * In-process STT via the Vosk JNI bindings. One read-only shared {@link Model} for the plugin's
+ * lifetime, but a fresh {@link Recognizer} per call, so it's thread-safe across concurrent
  * speakers with zero locking.
  */
 public final class InternalVoskEngine implements SpeechRecognitionEngine {
 
-    /** Sample rate almost every published Vosk acoustic model is trained at. */
+    /** Most published Vosk models are trained at this rate. */
     private static final int DEFAULT_TARGET_SAMPLE_RATE_HZ = 16_000;
 
-    /** Sentinel Vosk emits for out-of-grammar audio; always filtered out of results. */
+    /** Vosk's out-of-grammar sentinel; always filtered out of results. */
     private static final String UNKNOWN_TOKEN = "[unk]";
 
     private final Gson gson = new Gson();
@@ -52,7 +51,7 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
     private volatile boolean shutdown;
 
     /**
-     * @param modelDirectory     path to an unpacked Vosk model directory ({@code am/}, {@code graph/}, {@code conf/}, ...)
+     * @param modelDirectory     path to an unpacked Vosk model directory
      * @param vocabulary         restricted set of spell keywords; must not be empty
      * @param targetSampleRateHz sample rate the model was trained at (usually {@code 16000})
      * @param logger             logger for lifecycle and error messages
@@ -77,7 +76,7 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
             throw new IOException("Vosk model directory does not exist or is not a directory: " + modelDirectory);
         }
 
-        // Quiet down Vosk's native Kaldi logging; it writes directly to stderr otherwise.
+        // Vosk's native Kaldi logs straight to stderr; quiet it down.
         LibVosk.setLogLevel(LogLevel.WARNINGS);
 
         this.model = new Model(modelDirectory.toAbsolutePath().toString());
@@ -91,10 +90,6 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
                 + " targetSampleRateHz=" + targetSampleRateHz);
     }
 
-    /**
-     * Convenience constructor using {@link #DEFAULT_TARGET_SAMPLE_RATE_HZ} (16 kHz), the sample
-     * rate almost every published Vosk model expects.
-     */
     public InternalVoskEngine(@NotNull final Path modelDirectory,
                                @NotNull final List<String> vocabulary,
                                @NotNull final Logger logger) throws IOException {
@@ -121,9 +116,7 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
                 () -> recognizeBlocking(playerId, pcm16Samples, sampleRateHertz), recognitionExecutor);
     }
 
-    /**
-     * Runs on a virtual worker thread; each invocation owns its own {@link Recognizer}.
-     */
+    // Runs on a virtual worker thread; each call owns its own Recognizer, so no locking needed.
     @NotNull
     private String recognizeBlocking(@NotNull final UUID playerId,
                                       @NotNull final short[] rawSamples,
@@ -148,9 +141,8 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
     }
 
     /**
-     * Parses Vosk's {@code {"text": "..."}} result JSON and returns the recognized keyword only
-     * if it is an exact, single member of the constrained grammar; the Vosk unknown-token
-     * sentinel and anything else are normalized to an empty string.
+     * Returns the recognized keyword only if it is an exact member of the constrained grammar;
+     * anything else (including Vosk's unknown-token sentinel) is normalized to an empty string.
      */
     @NotNull
     private String extractRecognizedKeyword(@NotNull final String resultJson) {
@@ -195,10 +187,7 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
         return gson.toJson(array);
     }
 
-    /**
-     * Naive linear-interpolation resampler &mdash; fine for a constrained keyword recognizer,
-     * not for general audio.
-     */
+    // Naive linear interpolation - fine for keyword recognition, not general audio.
     @NotNull
     private static short[] resampleLinear(@NotNull final short[] input, final int fromHz, final int toHz) {
         if (input.length == 0 || fromHz == toHz) {

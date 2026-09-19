@@ -26,15 +26,11 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Delegates transcription to a remote STT microservice over one persistent WebSocket connection.
- *
- * <p>Wire protocol: each Listen Window goes out as {@code {"type":"start",...}}, then raw 16-bit
- * little-endian mono PCM, then {@code {"type":"end",...}}; the server replies later on the same
- * connection with {@code {"requestId":"...","text":"...","confidence":0.94}}. Requests are
- * multiplexed by {@code requestId}, so many players' audio can be in flight on one socket.</p>
- *
- * <p>The client auto-reconnects with capped exponential backoff, and every in-flight request is
- * bounded by {@link #requestTimeout} so a silent server can never leak a never-completing future.</p>
+ * Delegates transcription to a remote STT microservice over one persistent WebSocket.
+ * Protocol per Listen Window: {@code {"type":"start",...}}, raw 16-bit little-endian mono PCM,
+ * then {@code {"type":"end",...}}; replies carry a {@code requestId} so many players multiplex
+ * on the single socket. Auto-reconnects with capped backoff; in-flight requests are bounded by
+ * {@link #requestTimeout}.
  */
 public final class ExternalWebSocketEngine implements SpeechRecognitionEngine {
 
@@ -82,7 +78,7 @@ public final class ExternalWebSocketEngine implements SpeechRecognitionEngine {
         this.connectionReady = new CompletableFuture<>();
         final TranscribeSocketClient newClient = new TranscribeSocketClient(endpoint);
         this.client = newClient;
-        newClient.connect(); // non-blocking; onOpen/onError/onClose fire on the client's own network thread
+        newClient.connect(); // non-blocking; callbacks fire on the client's own network thread
     }
 
     private void scheduleReconnect() {
@@ -124,9 +120,8 @@ public final class ExternalWebSocketEngine implements SpeechRecognitionEngine {
                 .orTimeout(requestTimeout.toMillis(), TimeUnit.MILLISECONDS)
                 .whenComplete((result, error) -> pendingRequests.remove(requestId));
 
-        // Capture the connection-ready future in flight at call time; if a reconnect happens
-        // mid-flight the *new* connectionReady simply won't be the one we're waiting on, and
-        // this send attempt will fail fast (below) rather than silently hang.
+        // Snapshot the connection-ready future at call time; if a reconnect happens mid-flight
+        // the send fails fast on the stale snapshot instead of silently hanging on the new one.
         final CompletableFuture<Void> readySnapshot = connectionReady;
 
         readySnapshot.whenComplete((ignoredVoid, connectError) -> {
@@ -196,7 +191,7 @@ public final class ExternalWebSocketEngine implements SpeechRecognitionEngine {
 
         final CompletableFuture<String> future = pendingRequests.remove(requestId);
         if (future == null) {
-            // Already timed out, already completed, or an unsolicited message; safe to drop.
+            // Already timed out, completed, or unsolicited - safe to drop.
             return;
         }
 
@@ -234,18 +229,13 @@ public final class ExternalWebSocketEngine implements SpeechRecognitionEngine {
         logger.info("ExternalWebSocketEngine shut down cleanly.");
     }
 
-    /** Outbound "begin segment" control message. */
     private record StartMessage(String type, String requestId, String playerId, int sampleRate) {
     }
 
-    /** Outbound "end segment" control message. */
     private record EndMessage(String type, String requestId) {
     }
 
-    /**
-     * Private inner class because Java-WebSocket requires extending {@link WebSocketClient}; wires
-     * connection lifecycle callbacks back into the outer engine.
-     */
+    // Java-WebSocket requires extending WebSocketClient; wires lifecycle callbacks back to the engine.
     private final class TranscribeSocketClient extends WebSocketClient {
 
         TranscribeSocketClient(@NotNull final URI serverUri) {

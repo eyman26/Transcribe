@@ -1,29 +1,59 @@
 package org.eyman_.activation;
 
-import org.eyman_.api.TranscribeAPI;
 import me.clip.placeholderapi.PlaceholderAPI;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
+import org.eyman_.api.TranscribeAPI;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Duration;
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Detects the configured gestures/conditions that open a player's Listen Window and forwards them
- * to {@link TranscribeAPI}, the single source of truth for window state and expiry.
+ * Detects the configured client actions/conditions that open a player's Listen Window.
  */
 public final class ActivationManager implements Listener {
+
+    public enum TriggerType {
+        SWAP_HAND,
+        SNEAK_SWAP_HAND,
+        DROP_ITEM,
+        SNEAK_DROP_ITEM,
+        LEFT_CLICK,
+        SNEAK_LEFT_CLICK,
+        RIGHT_CLICK,
+        SNEAK_RIGHT_CLICK,
+        HOTBAR_SLOT;
+
+        @Nullable
+        public static TriggerType parse(@NotNull final String raw) {
+            try {
+                return valueOf(raw.trim().toUpperCase(Locale.ROOT));
+            } catch (final IllegalArgumentException e) {
+                return null;
+            }
+        }
+    }
 
     private final JavaPlugin plugin;
     private final Logger logger;
@@ -46,11 +76,6 @@ public final class ActivationManager implements Listener {
         }
     }
 
-    /**
-     * Registers this class as a Bukkit listener and, if configured and available, starts the
-     * PlaceholderAPI condition polling task. Safe to call at most once per instance, subsequent
-     * calls are no-ops.
-     */
     public void register() {
         if (registered) {
             return;
@@ -69,11 +94,6 @@ public final class ActivationManager implements Listener {
         }
     }
 
-    /**
-     * Cancels the polling task (if running) and unregisters all Bukkit event handlers owned by
-     * this instance. Safe to call multiple times, and safe to call even if {@link #register()}
-     * was never called.
-     */
     public void shutdown() {
         if (placeholderPollingTask != null) {
             placeholderPollingTask.cancel();
@@ -85,30 +105,65 @@ public final class ActivationManager implements Listener {
 
     @EventHandler(ignoreCancelled = true)
     public void onPlayerDropItem(@NotNull final PlayerDropItemEvent event) {
-        if (event.getPlayer().isSneaking()) {
-            triggerActivation(event.getPlayer(), "shift+q (stack drop)");
+        final Player player = event.getPlayer();
+        final boolean sneaking = player.isSneaking();
+
+        if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_DROP_ITEM)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "SNEAK_DROP_ITEM");
+        } else if (!sneaking && config.enabledTriggers().contains(TriggerType.DROP_ITEM)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "DROP_ITEM");
         }
     }
 
     @EventHandler
     public void onSwapHandItems(@NotNull final PlayerSwapHandItemsEvent event) {
-        if (event.getPlayer().isSneaking()) {
-            triggerActivation(event.getPlayer(), "shift+f (swap hands)");
+        final Player player = event.getPlayer();
+        final boolean sneaking = player.isSneaking();
+
+        if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_SWAP_HAND)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "SNEAK_SWAP_HAND");
+        } else if (!sneaking && config.enabledTriggers().contains(TriggerType.SWAP_HAND)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "SWAP_HAND");
+        }
+    }
+
+    @EventHandler
+    public void onPlayerInteract(@NotNull final PlayerInteractEvent event) {
+        final Player player = event.getPlayer();
+        final Action action = event.getAction();
+        final boolean sneaking = player.isSneaking();
+
+        if (action == Action.LEFT_CLICK_AIR || action == Action.LEFT_CLICK_BLOCK) {
+            if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_LEFT_CLICK)) {
+                triggerActivation(player, "SNEAK_LEFT_CLICK");
+            } else if (!sneaking && config.enabledTriggers().contains(TriggerType.LEFT_CLICK)) {
+                triggerActivation(player, "LEFT_CLICK");
+            }
+        } else if (action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK) {
+            if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_RIGHT_CLICK)) {
+                triggerActivation(player, "SNEAK_RIGHT_CLICK");
+            } else if (!sneaking && config.enabledTriggers().contains(TriggerType.RIGHT_CLICK)) {
+                triggerActivation(player, "RIGHT_CLICK");
+            }
         }
     }
 
     @EventHandler
     public void onItemHeld(@NotNull final PlayerItemHeldEvent event) {
-        if (config.activationHotbarSlot() >= 0 && event.getNewSlot() == config.activationHotbarSlot()) {
-            triggerActivation(event.getPlayer(), "hotbar slot " + event.getNewSlot());
+        if (!config.enabledTriggers().contains(TriggerType.HOTBAR_SLOT)) {
+            return;
+        }
+
+        final int newSlot0Based = event.getNewSlot();
+        if (config.hotbarSlots().contains(newSlot0Based)) {
+            triggerActivation(event.getPlayer(), "HOTBAR_SLOT (" + newSlot0Based + ")");
         }
     }
 
-    /**
-     * Polls the configured PlaceholderAPI expression for every online player. Runs on the main
-     * thread (scheduled via {@code runTaskTimer}) since arbitrary placeholder expansions are not
-     * guaranteed thread-safe by third-party expansion authors.
-     */
     private void pollPlaceholderConditions() {
         final String placeholder = config.papiPlaceholder();
         if (placeholder == null) {
@@ -124,7 +179,7 @@ public final class ActivationManager implements Listener {
                 continue;
             }
             if (resolved != null && resolved.trim().equalsIgnoreCase(config.papiExpectedValue())) {
-                triggerActivation(player, "placeholderapi");
+                triggerActivation(player, "PLACEHOLDERAPI");
             }
         }
     }
@@ -133,37 +188,34 @@ public final class ActivationManager implements Listener {
         final boolean opened = TranscribeAPI.get().forceStartListenWindow(player, config.windowDuration());
         if (opened) {
             logger.fine(() -> "Opened Listen Window for " + player.getName() + " via " + reason);
+            
+            if (config.enableActionBar()) {
+                player.sendActionBar(Component.text("🎤 Listening...", NamedTextColor.GREEN));
+            }
+            if (config.enableSoundCues()) {
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.5f, 1.8f);
+            }
         }
     }
 
-    /**
-     * Immutable configuration for an {@link ActivationManager} instance, typically populated
-     * from {@code config.yml} by the main plugin class.
-     *
-     * @param windowDuration        how long a triggered Listen Window stays open; must be positive
-     * @param activationHotbarSlot  0-based hotbar slot (0-8) that opens a window when selected,
-     *                              or {@code -1} to disable the hotbar-slot trigger entirely
-     * @param papiPlaceholder       a PlaceholderAPI expression (e.g. {@code "%someplugin_cast%"})
-     *                              to poll, or {@code null} to disable the PlaceholderAPI trigger
-     * @param papiExpectedValue     the value {@code papiPlaceholder} must resolve to (case-insensitive)
-     *                              to count as an activation; ignored if {@code papiPlaceholder} is null
-     * @param papiPollIntervalTicks how often, in server ticks, to poll {@code papiPlaceholder}
-     */
     public record ActivationConfig(@NotNull Duration windowDuration,
-                                    int activationHotbarSlot,
+                                    @NotNull Set<TriggerType> enabledTriggers,
+                                    @NotNull List<Integer> hotbarSlots,
+                                    boolean cancelTriggerEvents,
+                                    boolean enableActionBar,
+                                    boolean enableSoundCues,
                                     @Nullable String papiPlaceholder,
                                     @NotNull String papiExpectedValue,
                                     long papiPollIntervalTicks) {
 
         public ActivationConfig {
             Objects.requireNonNull(windowDuration, "windowDuration");
+            Objects.requireNonNull(enabledTriggers, "enabledTriggers");
+            Objects.requireNonNull(hotbarSlots, "hotbarSlots");
             Objects.requireNonNull(papiExpectedValue, "papiExpectedValue");
+
             if (windowDuration.isZero() || windowDuration.isNegative()) {
                 throw new IllegalArgumentException("windowDuration must be positive, was: " + windowDuration);
-            }
-            if (activationHotbarSlot < -1 || activationHotbarSlot > 8) {
-                throw new IllegalArgumentException(
-                        "activationHotbarSlot must be -1 (disabled) or in range 0-8, was: " + activationHotbarSlot);
             }
             if (papiPlaceholder != null && papiPlaceholder.isBlank()) {
                 papiPlaceholder = null;
@@ -175,6 +227,10 @@ public final class ActivationManager implements Listener {
                 throw new IllegalArgumentException(
                         "papiPollIntervalTicks must be positive, was: " + papiPollIntervalTicks);
             }
+
+            enabledTriggers = Collections.unmodifiableSet(EnumSet.copyOf(enabledTriggers.isEmpty() 
+                    ? EnumSet.noneOf(TriggerType.class) : enabledTriggers));
+            hotbarSlots = List.copyOf(hotbarSlots);
         }
     }
 }
