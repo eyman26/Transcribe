@@ -24,43 +24,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * Bridges Simple Voice Chat's raw microphone audio into Transcribe's recognition pipeline.
- *
- * <p>Verified against the real {@code voicechat-api} javadoc:
- * {@code MicrophonePacketEvent.getSenderConnection()} returns {@code @Nullable VoicechatConnection};
- * {@code VoicechatConnection.getPlayer()} returns {@code ServerPlayer}; {@code ServerPlayer.getUuid()}
- * returns the player's {@link UUID} directly; {@code MicrophonePacket.getOpusEncodedData()} returns
- * the raw Opus bytes.</p>
- *
- * <p><b>Decoding does not go through {@code VoicechatApi.createDecoder()}.</b> That method's own
- * javadoc states it returns {@code null} on the Bukkit build of Simple Voice Chat - no Opus
- * natives are bundled for that platform. This uses {@code opus4j} instead
- * ({@code de.maxhenkel.opus4j:opus4j}), the same underlying native Opus wrapper Simple Voice Chat
- * itself is built on, published by the same author to the same Maven repo already declared in
- * {@code build.gradle.kts} for {@code voicechat-api}. One {@link OpusDecoder} is created per
- * Listen Window (decoding is stateful/streaming, never shared across players or reused across
- * windows) and closed when the window ends - not closing it leaks native memory.</p>
- *
- * <p>Wiring: {@link TranscribePlugin} constructs one instance, registers it as a
- * {@link TranscribeAPI.WindowLifecycleListener}, and its SVC hook's {@code registerEvents}
- * forwards every {@code MicrophonePacketEvent} into {@link #onMicrophonePacket}.</p>
- */
 public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecycleListener {
 
-    /**
-     * Sample rate Simple Voice Chat encodes microphone audio at. Opus's voice/VOIP modes support
-     * 8/12/16/24/48kHz, and 48kHz is the standard default for real-time voice chat (matches
-     * opus4j's own usage examples); {@link SpeechRecognitionEngine} implementations already
-     * resample internally (see {@code InternalVoskEngine}), so this only needs to be the
-     * <em>true</em> rate of the decoded audio. A wrong value here would not crash anything -
-     * Opus decoding against the wrong declared rate just produces distorted audio - so if
-     * recognition accuracy seems consistently poor, this is the first thing to double-check
-     * against your installed Simple Voice Chat version.
-     */
     public static final int MICROPHONE_SAMPLE_RATE_HZ = 48_000;
 
-    /** Mono, matching opus4j's official microphone-capture usage examples. */
+    // Mono, matching opus4j's official microphone-capture usage examples.
     private static final int MICROPHONE_CHANNELS = 1;
 
     private final TranscribePlugin plugin;
@@ -73,12 +41,12 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
         this.logger = plugin.getLogger();
     }
 
-    /** Called by {@code /transcribe reload} so the debug level takes effect without a restart. */
+    // Called by {@code /transcribe reload} so the debug level takes effect without a restart.
     public void setDebugLevel(final int debugLevel) {
         this.debugLevel = debugLevel;
     }
 
-    // ---- Raw SVC packet ingestion (fires off the main thread, on SVC's own network/audio thread) ----
+    // Raw SVC packet ingestion (fires off the main thread, on SVC's own network/audio thread)
 
     public void onMicrophonePacket(@NotNull final MicrophonePacketEvent event) {
         final UUID playerId = resolvePlayerId(event);
@@ -87,7 +55,7 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
         }
 
         // The actual gate: if this player has no open Listen Window, the packet is dropped here
-        // and never decoded - this is what keeps idle CPU usage near zero.
+        // and never decoded, this is what keeps idle CPU usage near zero.
         if (!TranscribeAPI.get().isListening(playerId)) {
             return;
         }
@@ -131,14 +99,14 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
         return serverPlayer == null ? null : serverPlayer.getUuid();
     }
 
-    // ---- Window lifecycle: start/stop buffering, hand off to the engine, play cues ----
+    // Window lifecycle: start/stop buffering, hand off to the engine, play cues
 
     @Override
     public void onWindowOpened(@NotNull final UUID playerId) {
         final OpusDecoder decoder;
         try {
             decoder = new OpusDecoder(MICROPHONE_SAMPLE_RATE_HZ, MICROPHONE_CHANNELS);
-        } catch (final RuntimeException nativeInitFailure) {
+        } catch (final Exception nativeInitFailure) {
             logger.log(Level.SEVERE, "Failed to create an opus4j decoder for " + playerId
                     + " - this player's speech will not be captured for this window.", nativeInitFailure);
             return;
@@ -202,7 +170,7 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
                 });
     }
 
-    // ---- Closing cue (opening cue already lives in ActivationManager, alongside its trigger) ----
+    // Closing cue (opening cue already lives in ActivationManager, alongside its trigger) 
 
     private void playCloseCue(@NotNull final UUID playerId) {
         if (!plugin.getConfig().getBoolean("activation.feedback.sound", true)) {
