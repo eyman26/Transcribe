@@ -37,6 +37,7 @@ public final class ActivationManager implements Listener {
     public enum TriggerType {
         SWAP_HAND,
         SNEAK_SWAP_HAND,
+        SPRINT_SWAP_HAND,
         DROP_ITEM,
         SNEAK_DROP_ITEM,
         LEFT_CLICK,
@@ -92,6 +93,12 @@ public final class ActivationManager implements Listener {
                     + "' == '" + config.papiExpectedValue() + "' is being polled every "
                     + intervalTicks + " ticks.");
         }
+
+        if (config.debugLevel() >= 1) {
+            logger.info("[Transcribe debug] ActivationManager registered. Active triggers: "
+                    + config.enabledTriggers() + " | hotbar slots: " + config.hotbarSlots()
+                    + " | PlaceholderAPI trigger: " + placeholderApiAvailable);
+        }
     }
 
     public void shutdown() {
@@ -125,6 +132,9 @@ public final class ActivationManager implements Listener {
         if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_SWAP_HAND)) {
             if (config.cancelTriggerEvents()) event.setCancelled(true);
             triggerActivation(player, "SNEAK_SWAP_HAND");
+        } else if (!sneaking && player.isSprinting() && config.enabledTriggers().contains(TriggerType.SPRINT_SWAP_HAND)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "SPRINT_SWAP_HAND");
         } else if (!sneaking && config.enabledTriggers().contains(TriggerType.SWAP_HAND)) {
             if (config.cancelTriggerEvents()) event.setCancelled(true);
             triggerActivation(player, "SWAP_HAND");
@@ -185,16 +195,24 @@ public final class ActivationManager implements Listener {
     }
 
     private void triggerActivation(@NotNull final Player player, @NotNull final String reason) {
+        if (config.debugLevel() >= 2) {
+            logger.info("[Transcribe debug] Trigger fired: " + reason + " by " + player.getName());
+        }
+
         final boolean opened = TranscribeAPI.get().forceStartListenWindow(player, config.windowDuration());
         if (opened) {
-            logger.fine(() -> "Opened Listen Window for " + player.getName() + " via " + reason);
-            
+            if (config.debugLevel() >= 1) {
+                logger.info("[Transcribe debug] Listen Window opened for " + player.getName() + " via " + reason);
+            }
+
             if (config.enableActionBar()) {
                 player.sendActionBar(Component.text("🎤 Listening...", NamedTextColor.GREEN));
             }
             if (config.enableSoundCues()) {
                 player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.5f, 1.8f);
             }
+        } else if (config.debugLevel() >= 2) {
+            logger.info("[Transcribe debug] " + reason + " refreshed an already-open window for " + player.getName());
         }
     }
 
@@ -206,7 +224,8 @@ public final class ActivationManager implements Listener {
                                     boolean enableSoundCues,
                                     @Nullable String papiPlaceholder,
                                     @NotNull String papiExpectedValue,
-                                    long papiPollIntervalTicks) {
+                                    long papiPollIntervalTicks,
+                                    int debugLevel) {
 
         public ActivationConfig {
             Objects.requireNonNull(windowDuration, "windowDuration");
@@ -226,6 +245,9 @@ public final class ActivationManager implements Listener {
             if (papiPollIntervalTicks <= 0) {
                 throw new IllegalArgumentException(
                         "papiPollIntervalTicks must be positive, was: " + papiPollIntervalTicks);
+            }
+            if (debugLevel < 0 || debugLevel > 3) {
+                throw new IllegalArgumentException("debugLevel must be 0-3, was: " + debugLevel);
             }
 
             enabledTriggers = Collections.unmodifiableSet(EnumSet.copyOf(enabledTriggers.isEmpty() 

@@ -43,6 +43,12 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.14.0")
     implementation("net.java.dev.jna:jna-platform:5.14.0")
 
+    // Opus decoder for Simple Voice Chat audio. NOTE: VoicechatApi#createDecoder() returns null
+    // on the Bukkit/Paper build of Simple Voice Chat (no Opus natives bundled for that platform -
+    // see that method's own javadoc). opus4j is the same underlying native Opus wrapper SVC
+    // itself is built on, published by the same author to the maven.maxhenkel.de repo above.
+    implementation("de.maxhenkel.opus4j:opus4j:2.1.0")
+
     implementation("org.java-websocket:Java-WebSocket:1.5.7")
 
     implementation("com.google.code.gson:gson:2.11.0")
@@ -75,6 +81,7 @@ tasks.shadowJar {
     minimize {
         exclude(dependency("com.alphacephei:vosk:.*"))
         exclude(dependency("net.java.dev.jna:.*:.*"))
+        exclude(dependency("de.maxhenkel.opus4j:.*:.*"))
     }
 }
 

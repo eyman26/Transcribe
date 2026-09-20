@@ -14,6 +14,24 @@
 #     `activation.placeholderapi.expected-value` is compared as a *string*,
 #     so quote it even though it reads like a boolean.
 
+# How much Transcribe logs to console, so you can see what it's actually
+# doing (or confirm it's doing nothing, and why). All debug lines are
+# prefixed "[Transcribe debug]" and logged at INFO level (so they show up
+# even if your host's log level filters out FINE/DEBUG). Takes effect
+# immediately on /transcribe reload - no restart needed.
+#   0 - off (default). Only the normal enable/disable/reload lines log.
+#   1 - lifecycle: Listen Windows opening, and each recognition result
+#       ("'ignis'" or "(no keyword recognized)") with how long it took.
+#       Enough to answer "is it doing anything at all?"
+#   2 - + trigger detail: which specific trigger fired and for whom, windows
+#       that refreshed instead of opening, PlaceholderAPI polling, and audio
+#       capture sessions opening/closing with total samples captured.
+#   3 - + per-packet audio: every individual microphone packet decoded, with
+#       byte/sample counts. Very chatty - only for deep troubleshooting of
+#       the SVC <-> opus4j audio pipeline itself.
+debug:
+  level: 0
+
 # which speech-to-text backend transcribes captured voice audio, and
 # how that backend is configured.
 engine:
@@ -110,6 +128,7 @@ activation:
   # Active client action triggers. Options:
   #   - SWAP_HAND          (Pressing F)
   #   - SNEAK_SWAP_HAND    (Pressing Shift + F)
+  #   - SPRINT_SWAP_HAND   (Pressing F while sprinting)
   #   - DROP_ITEM          (Pressing Q)
   #   - SNEAK_DROP_ITEM    (Pressing Shift + Q)
   #   - LEFT_CLICK         (Left Clicking)
@@ -117,6 +136,9 @@ activation:
   #   - RIGHT_CLICK        (Right Clicking)
   #   - SNEAK_RIGHT_CLICK  (Pressing Shift + Right Click)
   #   - HOTBAR_SLOT        (Switching to slots in hotbar-slots below)
+  # Note: LEFT_CLICK/SNEAK_LEFT_CLICK fire for left-clicking air or a block, but
+  # NOT for left-clicking (attacking) an entity - Bukkit doesn't emit a click
+  # event for that case, only a damage event, which this plugin doesn't hook.
   triggers:
     - "SNEAK_SWAP_HAND"
     - "SNEAK_DROP_ITEM"
@@ -129,7 +151,10 @@ activation:
   # so players don't actually drop items/swap hands when triggering activation.
   cancel-trigger-events: true
 
-  # Visual and auditory feedback when a Listen Window opens.
+  # Visual and auditory feedback when a Listen Window opens and closes. The
+  # open cue plays a pling and shows "Listening..." in the actionbar; the
+  # close cue (sound only, gated by the same `sound` flag) plays a lower,
+  # quieter bass note so open/close are distinguishable by ear.
   feedback:
     actionbar: true
     sound: true

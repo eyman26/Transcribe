@@ -2,6 +2,7 @@ package org.eyman_;
 
 import org.eyman_.activation.ActivationManager;
 import org.eyman_.api.TranscribeAPI;
+import org.eyman_.audio.TranscribeAudioListener;
 import org.eyman_.engine.ExternalWebSocketEngine;
 import org.eyman_.engine.InternalVoskEngine;
 import org.eyman_.engine.SpeechRecognitionEngine;
@@ -9,6 +10,8 @@ import org.eyman_.events.VoiceWordSpokenEvent;
 import de.maxhenkel.voicechat.api.BukkitVoicechatService;
 import de.maxhenkel.voicechat.api.VoicechatApi;
 import de.maxhenkel.voicechat.api.VoicechatPlugin;
+import de.maxhenkel.voicechat.api.events.EventRegistration;
+import de.maxhenkel.voicechat.api.events.MicrophonePacketEvent;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
@@ -32,7 +35,9 @@ public final class TranscribePlugin extends JavaPlugin {
 
     private SpeechRecognitionEngine speechEngine;
     private ActivationManager activationManager;
+    private TranscribeAudioListener audioListener;
     private List<String> consoleCommandTemplates = List.of();
+    private volatile int debugLevel;
 
     // Populated by the VoicechatPlugin hook below.
     private volatile VoicechatApi voicechatApi;
@@ -48,12 +53,18 @@ public final class TranscribePlugin extends JavaPlugin {
             return;
         }
 
+        TranscribeAPI.internalBootstrap();
+
+        this.debugLevel = getConfig().getInt("debug.level", 0);
+
+        this.audioListener = new TranscribeAudioListener(this);
+        this.audioListener.setDebugLevel(debugLevel);
+        TranscribeAPI.get().internalAddLifecycleListener(audioListener);
+
         if (!registerVoicechatServiceHook()) {
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
-
-        TranscribeAPI.internalBootstrap();
 
         try {
             this.speechEngine = buildConfiguredEngine();
@@ -75,7 +86,8 @@ public final class TranscribePlugin extends JavaPlugin {
         activationManager.register();
 
         getLogger().info("Transcribe enabled: engine=" + getConfig().getString("engine.mode", "internal")
-                + " activation-window=" + getConfig().getDouble("activation.window-seconds", 3.0) + "s");
+                + " activation-window=" + getConfig().getDouble("activation.window-seconds", 3.0) + "s"
+                + " debug-level=" + debugLevel);
     }
 
     @Override
@@ -160,7 +172,8 @@ public final class TranscribePlugin extends JavaPlugin {
 
         final ActivationManager.ActivationConfig activationConfig = new ActivationManager.ActivationConfig(
                 windowDuration, enabledTriggers, hotbarSlots, cancelTriggerEvents,
-                enableActionBar, enableSoundCues, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks);
+                enableActionBar, enableSoundCues, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks,
+                debugLevel);
 
         return new ActivationManager(this, activationConfig);
     }
@@ -213,6 +226,9 @@ public final class TranscribePlugin extends JavaPlugin {
     private void reload(@NotNull final CommandSender sender) {
         reloadConfig();
 
+        this.debugLevel = getConfig().getInt("debug.level", 0);
+        this.audioListener.setDebugLevel(debugLevel);
+
         final SpeechRecognitionEngine newEngine;
         try {
             newEngine = buildConfiguredEngine();
@@ -249,7 +265,7 @@ public final class TranscribePlugin extends JavaPlugin {
             oldEngine.shutdown();
         }
 
-        getLogger().info("Configuration reloaded.");
+        getLogger().info("Configuration reloaded. debug-level=" + debugLevel);
         sender.sendMessage("Transcribe configuration reloaded.");
     }
 
@@ -275,7 +291,9 @@ public final class TranscribePlugin extends JavaPlugin {
         return speechEngine;
     }
 
-    // Captures the VoicechatApi reference for the audio-frame ingestion pipeline.
+    // Captures the VoicechatApi reference, and subscribes the audio listener to microphone
+    // packets - registerEvents is the *only* place SVC allows event registration, per its own
+    // plugin API contract.
     private final class TranscribeVoicechatHook implements VoicechatPlugin {
 
         @Override
@@ -288,6 +306,11 @@ public final class TranscribePlugin extends JavaPlugin {
         public void initialize(@NotNull final VoicechatApi api) {
             voicechatApi = api;
             getLogger().info("Simple Voice Chat API handshake complete.");
+        }
+
+        @Override
+        public void registerEvents(@NotNull final EventRegistration registration) {
+            registration.registerEvent(MicrophonePacketEvent.class, audioListener::onMicrophonePacket);
         }
     }
 }
