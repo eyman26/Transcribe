@@ -9,7 +9,6 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
-import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
@@ -38,8 +37,6 @@ public final class ActivationManager implements Listener {
         SWAP_HAND,
         SNEAK_SWAP_HAND,
         SPRINT_SWAP_HAND,
-        DROP_ITEM,
-        SNEAK_DROP_ITEM,
         LEFT_CLICK,
         SNEAK_LEFT_CLICK,
         RIGHT_CLICK,
@@ -108,20 +105,6 @@ public final class ActivationManager implements Listener {
         }
         HandlerList.unregisterAll(this);
         registered = false;
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onPlayerDropItem(@NotNull final PlayerDropItemEvent event) {
-        final Player player = event.getPlayer();
-        final boolean sneaking = player.isSneaking();
-
-        if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_DROP_ITEM)) {
-            if (config.cancelTriggerEvents()) event.setCancelled(true);
-            triggerActivation(player, "SNEAK_DROP_ITEM");
-        } else if (!sneaking && config.enabledTriggers().contains(TriggerType.DROP_ITEM)) {
-            if (config.cancelTriggerEvents()) event.setCancelled(true);
-            triggerActivation(player, "DROP_ITEM");
-        }
     }
 
     @EventHandler
@@ -217,15 +200,15 @@ public final class ActivationManager implements Listener {
     }
 
     public record ActivationConfig(@NotNull Duration windowDuration,
-                                    @NotNull Set<TriggerType> enabledTriggers,
-                                    @NotNull List<Integer> hotbarSlots,
-                                    boolean cancelTriggerEvents,
-                                    boolean enableActionBar,
-                                    boolean enableSoundCues,
-                                    @Nullable String papiPlaceholder,
-                                    @NotNull String papiExpectedValue,
-                                    long papiPollIntervalTicks,
-                                    int debugLevel) {
+                                   @NotNull Set<TriggerType> enabledTriggers,
+                                   @NotNull List<Integer> hotbarSlots,
+                                   boolean cancelTriggerEvents,
+                                   boolean enableActionBar,
+                                   boolean enableSoundCues,
+                                   @Nullable String papiPlaceholder,
+                                   @NotNull String papiExpectedValue,
+                                   long papiPollIntervalTicks,
+                                   int debugLevel) {
 
         public ActivationConfig {
             Objects.requireNonNull(windowDuration, "windowDuration");
