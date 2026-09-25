@@ -21,7 +21,7 @@
 # immediately on /transcribe reload - no restart needed.
 #   0 - off (default). Only the normal enable/disable/reload lines log.
 #   1 - lifecycle: Listen Windows opening, and each recognition result
-#       ("'ignis'" or "(no keyword recognized)") with how long it took.
+#       ("'fire'" or "(no keyword recognized)") with how long it took.
 #       Enough to answer "is it doing anything at all?"
 #   2 - + trigger detail: which specific trigger fired and for whom, windows
 #       that refreshed instead of opening, PlaceholderAPI polling, and audio
@@ -77,7 +77,7 @@ engine:
     # keyword only grammar like this plugin uses, one of the small ~40-50MB
     # models (e.g. vosk-model-small-en-us-0.15) is more than sufficient.
     # You do not need a large general-purpose model.
-    model-path: models/vosk-model-small-en-us
+    model-path: models/vosk-model-small-en-us-0.15
 
     # The constrained vocabulary the recognizer is limited to. This is the
     # single biggest lever on both CPU usage and recognition accuracy:
@@ -87,18 +87,18 @@ engine:
     # actively listening.
     #
     # Rules of thumb when choosing words:
-    #   - Prefer short, phonetically distinct words. "ignis" and "lumos" are
+    #   - Prefer short, phonetically distinct words. "fire" and "light" are
     #     easy for the recognizer to tell apart; "fire" and "fyre" are not.
     #   - Every word here should correspond to something your server actually
     #     reacts to (see recognition.console-commands below, or a listener
     #     for VoiceWordSpokenEvent registered by another plugin).
     #   - Casing doesn't matter; everything is normalized to lowercase.
     #   - This list feeds directly into Vosk's JSON grammar array, e.g.
-    #     ["ignis", "lumos", "glacio"] - keep entries simple, single words.
+    #     ["fire", "light", "ice"] - keep entries simple, single words.
     grammar:
-      - ignis    # example: fire/damage spell
-      - lumos    # example: light-giving spell
-      - glacio   # example: ice/slow spell
+      - fire    # example: fire/damage spell
+      - light    # example: light-giving spell
+      - ice   # example: ice/slow spell
 
   # settings used only when engine.mode is EXTERNAL.
   external:
@@ -119,7 +119,7 @@ engine:
     request-timeout-millis: 5000
 
 
-#  what opens a player's "Listen Window" - the short interval during which their voice audio is captured and decoded.            
+#  what opens a player's "Listen Window" - the short interval during which their voice audio is captured and decoded.
 activation:
 
   # How long a triggered Listen Window stays open, in seconds.
@@ -147,7 +147,7 @@ activation:
   hotbar-slots:
     - 9
 
-  # Whether gesture actions (like Swap Hand F or Drop Item Q) should be cancelled 
+  # Whether gesture actions (like Swap Hand F or Drop Item Q) should be cancelled
   # so players don't actually drop items/swap hands when triggering activation.
   cancel-trigger-events: true
 
@@ -159,7 +159,7 @@ activation:
     actionbar: true
     sound: true
 
-  # PlaceholderAPI Condition Trigger 
+  # PlaceholderAPI Condition Trigger
   placeholderapi:
     placeholder: ''
     expected-value: 'true'
@@ -188,7 +188,7 @@ recognition:
   # multiple VoiceWordSpokenEvent listeners that check getKeyword()) rather
   # than hard-coding one command per spell here - but simple per-keyword
   # entries work fine too, for example:
-  #   - "execute if score %player% transcribe_keyword_ignis matches 1 run ..."
+  #   - "execute if score %player% transcribe_keyword_fire matches 1 run ..."
   # or, more simply, running a single command that always delegates the
   # branching logic to another plugin:
   #   - "spellcast trigger %player% %keyword%"
