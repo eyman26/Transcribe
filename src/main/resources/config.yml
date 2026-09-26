@@ -152,10 +152,7 @@ activation:
   # Whether gesture actions (sneak+click, swap hands/F, drop item/Q, hotbar slot select)
   # should be cancelled so players don't actually perform the vanilla action (dropping
   # items, swapping hands, etc.) just from triggering activation. Applies to every
-  # trigger above. One exception: cancelling a hotbar-slot switch (HOTBAR_SLOT /
-  # SNEAK_HOTBAR_SLOT) reverts the slot server-side, but the client has already
-  # switched the selection visually the instant the key/scroll input happened -
-  # this is a client/server sync quirk Bukkit/Paper can't fully suppress, not a bug.
+  # trigger above.
   cancel-trigger-events: true
 
   # Fully configurable visual and auditory feedback when a Listen Window opens and
