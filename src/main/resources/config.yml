@@ -1,5 +1,6 @@
 # =============================================================================
 #  Transcribe configuration
+#  made by eyman_
 # =============================================================================
 # This file is copied out of the plugin jar the first time Transcribe starts
 # (JavaPlugin#saveDefaultConfig) and is never overwritten automatically after
