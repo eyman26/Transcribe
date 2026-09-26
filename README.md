@@ -54,5 +54,5 @@ See the module docstring at the top of `server.py` for the full wire protocol.
 
 Edit `plugins/Transcribe/config.yml` after the first run - every option is documented inline,
 covering engine selection (`INTERNAL` vs `EXTERNAL`), the Vosk grammar/keyword list, activation
-triggers (fixed SHIFT+Q/SHIFT+F keybinds, configurable hotbar slot, PlaceholderAPI condition),
+triggers,
 and console-command dispatch on recognized keywords.
