@@ -36,7 +36,6 @@ public final class ActivationManager implements Listener {
     public enum TriggerType {
         SWAP_HAND,
         SNEAK_SWAP_HAND,
-        SPRINT_SWAP_HAND,
         LEFT_CLICK,
         SNEAK_LEFT_CLICK,
         RIGHT_CLICK,
@@ -115,9 +114,6 @@ public final class ActivationManager implements Listener {
         if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_SWAP_HAND)) {
             if (config.cancelTriggerEvents()) event.setCancelled(true);
             triggerActivation(player, "SNEAK_SWAP_HAND");
-        } else if (!sneaking && player.isSprinting() && config.enabledTriggers().contains(TriggerType.SPRINT_SWAP_HAND)) {
-            if (config.cancelTriggerEvents()) event.setCancelled(true);
-            triggerActivation(player, "SPRINT_SWAP_HAND");
         } else if (!sneaking && config.enabledTriggers().contains(TriggerType.SWAP_HAND)) {
             if (config.cancelTriggerEvents()) event.setCancelled(true);
             triggerActivation(player, "SWAP_HAND");

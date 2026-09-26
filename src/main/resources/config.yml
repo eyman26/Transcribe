@@ -128,7 +128,6 @@ activation:
   # Active client action triggers. Options:
   #   - SWAP_HAND          (Pressing F)
   #   - SNEAK_SWAP_HAND    (Pressing Shift + F)
-  #   - SPRINT_SWAP_HAND   (Pressing F while sprinting)
   #   - LEFT_CLICK         (Left Clicking)
   #   - SNEAK_LEFT_CLICK   (Pressing Shift + Left Click)
   #   - RIGHT_CLICK        (Right Clicking)
