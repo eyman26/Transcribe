@@ -736,3 +736,5 @@ STT host's real address, and `wss://` if it's off-box.
 
 GPL-3.0. Simple Voice Chat is an independent project under its own license; it is a required
 runtime dependency and is neither bundled nor redistributed here.
+
+Used Claude for making the README.md
