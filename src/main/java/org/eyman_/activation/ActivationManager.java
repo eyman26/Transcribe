@@ -1,9 +1,6 @@
 package org.eyman_.activation;
 
 import me.clip.placeholderapi.PlaceholderAPI;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
@@ -34,13 +31,14 @@ import java.util.logging.Logger;
 public final class ActivationManager implements Listener {
 
     public enum TriggerType {
-        SWAP_HAND,
-        SNEAK_SWAP_HAND,
+        OFF_HAND,
+        SNEAK_OFF_HAND,
         LEFT_CLICK,
         SNEAK_LEFT_CLICK,
         RIGHT_CLICK,
         SNEAK_RIGHT_CLICK,
-        HOTBAR_SLOT;
+        HOTBAR_SLOT,
+        SNEAK_HOTBAR_SLOT;
 
         @Nullable
         public static TriggerType parse(@NotNull final String raw) {
@@ -111,12 +109,12 @@ public final class ActivationManager implements Listener {
         final Player player = event.getPlayer();
         final boolean sneaking = player.isSneaking();
 
-        if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_SWAP_HAND)) {
+        if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_OFF_HAND)) {
             if (config.cancelTriggerEvents()) event.setCancelled(true);
-            triggerActivation(player, "SNEAK_SWAP_HAND");
-        } else if (!sneaking && config.enabledTriggers().contains(TriggerType.SWAP_HAND)) {
+            triggerActivation(player, "SNEAK_OFF_HAND");
+        } else if (!sneaking && config.enabledTriggers().contains(TriggerType.OFF_HAND)) {
             if (config.cancelTriggerEvents()) event.setCancelled(true);
-            triggerActivation(player, "SWAP_HAND");
+            triggerActivation(player, "OFF_HAND");
         }
     }
 
@@ -128,14 +126,18 @@ public final class ActivationManager implements Listener {
 
         if (action == Action.LEFT_CLICK_AIR || action == Action.LEFT_CLICK_BLOCK) {
             if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_LEFT_CLICK)) {
+                if (config.cancelTriggerEvents()) event.setCancelled(true);
                 triggerActivation(player, "SNEAK_LEFT_CLICK");
             } else if (!sneaking && config.enabledTriggers().contains(TriggerType.LEFT_CLICK)) {
+                if (config.cancelTriggerEvents()) event.setCancelled(true);
                 triggerActivation(player, "LEFT_CLICK");
             }
         } else if (action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK) {
             if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_RIGHT_CLICK)) {
+                if (config.cancelTriggerEvents()) event.setCancelled(true);
                 triggerActivation(player, "SNEAK_RIGHT_CLICK");
             } else if (!sneaking && config.enabledTriggers().contains(TriggerType.RIGHT_CLICK)) {
+                if (config.cancelTriggerEvents()) event.setCancelled(true);
                 triggerActivation(player, "RIGHT_CLICK");
             }
         }
@@ -143,13 +145,20 @@ public final class ActivationManager implements Listener {
 
     @EventHandler
     public void onItemHeld(@NotNull final PlayerItemHeldEvent event) {
-        if (!config.enabledTriggers().contains(TriggerType.HOTBAR_SLOT)) {
+        final Player player = event.getPlayer();
+        final boolean sneaking = player.isSneaking();
+        final int newSlot0Based = event.getNewSlot();
+
+        if (!config.hotbarSlots().contains(newSlot0Based)) {
             return;
         }
 
-        final int newSlot0Based = event.getNewSlot();
-        if (config.hotbarSlots().contains(newSlot0Based)) {
-            triggerActivation(event.getPlayer(), "HOTBAR_SLOT (" + newSlot0Based + ")");
+        if (sneaking && config.enabledTriggers().contains(TriggerType.SNEAK_HOTBAR_SLOT)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "SNEAK_HOTBAR_SLOT (" + newSlot0Based + ")");
+        } else if (!sneaking && config.enabledTriggers().contains(TriggerType.HOTBAR_SLOT)) {
+            if (config.cancelTriggerEvents()) event.setCancelled(true);
+            triggerActivation(player, "HOTBAR_SLOT (" + newSlot0Based + ")");
         }
     }
 
@@ -183,13 +192,7 @@ public final class ActivationManager implements Listener {
             if (config.debugLevel() >= 1) {
                 logger.info("[Transcribe debug] Listen Window opened for " + player.getName() + " via " + reason);
             }
-
-            if (config.enableActionBar()) {
-                player.sendActionBar(Component.text("🎤 Listening...", NamedTextColor.GREEN));
-            }
-            if (config.enableSoundCues()) {
-                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.5f, 1.8f);
-            }
+            config.cues().playOpenCue(player);
         } else if (config.debugLevel() >= 2) {
             logger.info("[Transcribe debug] " + reason + " refreshed an already-open window for " + player.getName());
         }
@@ -199,8 +202,7 @@ public final class ActivationManager implements Listener {
                                    @NotNull Set<TriggerType> enabledTriggers,
                                    @NotNull List<Integer> hotbarSlots,
                                    boolean cancelTriggerEvents,
-                                   boolean enableActionBar,
-                                   boolean enableSoundCues,
+                                   @NotNull CueSettings cues,
                                    @Nullable String papiPlaceholder,
                                    @NotNull String papiExpectedValue,
                                    long papiPollIntervalTicks,
@@ -210,6 +212,7 @@ public final class ActivationManager implements Listener {
             Objects.requireNonNull(windowDuration, "windowDuration");
             Objects.requireNonNull(enabledTriggers, "enabledTriggers");
             Objects.requireNonNull(hotbarSlots, "hotbarSlots");
+            Objects.requireNonNull(cues, "cues");
             Objects.requireNonNull(papiExpectedValue, "papiExpectedValue");
 
             if (windowDuration.isZero() || windowDuration.isNegative()) {

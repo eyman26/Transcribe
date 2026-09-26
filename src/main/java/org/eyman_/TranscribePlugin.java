@@ -1,6 +1,7 @@
 package org.eyman_;
 
 import org.eyman_.activation.ActivationManager;
+import org.eyman_.activation.CueSettings;
 import org.eyman_.api.TranscribeAPI;
 import org.eyman_.audio.TranscribeAudioListener;
 import org.eyman_.engine.ExternalWebSocketEngine;
@@ -59,6 +60,13 @@ public final class TranscribePlugin extends JavaPlugin {
 
         this.audioListener = new TranscribeAudioListener(this);
         this.audioListener.setDebugLevel(debugLevel);
+        try {
+            this.audioListener.setCueSettings(buildCueSettings());
+        } catch (final IllegalArgumentException badCueConfig) {
+            getLogger().log(Level.SEVERE, "Invalid activation.feedback configuration in config.yml - disabling.", badCueConfig);
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         TranscribeAPI.get().internalAddLifecycleListener(audioListener);
 
         if (!registerVoicechatServiceHook()) {
@@ -162,8 +170,7 @@ public final class TranscribePlugin extends JavaPlugin {
                 .toList();
 
         final boolean cancelTriggerEvents = getConfig().getBoolean("activation.cancel-trigger-events", true);
-        final boolean enableActionBar = getConfig().getBoolean("activation.feedback.actionbar", true);
-        final boolean enableSoundCues = getConfig().getBoolean("activation.feedback.sound", true);
+        final CueSettings cues = buildCueSettings();
 
         final String rawPlaceholder = getConfig().getString("activation.placeholderapi.placeholder", "");
         final String papiPlaceholder = (rawPlaceholder == null || rawPlaceholder.isBlank()) ? null : rawPlaceholder;
@@ -172,10 +179,28 @@ public final class TranscribePlugin extends JavaPlugin {
 
         final ActivationManager.ActivationConfig activationConfig = new ActivationManager.ActivationConfig(
                 windowDuration, enabledTriggers, hotbarSlots, cancelTriggerEvents,
-                enableActionBar, enableSoundCues, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks,
+                cues, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks,
                 debugLevel);
 
         return new ActivationManager(this, activationConfig);
+    }
+
+    @NotNull
+    private CueSettings buildCueSettings() {
+        final boolean actionBarEnabled = getConfig().getBoolean("activation.feedback.action-bar.enabled", true);
+        final String openMessage = getConfig().getString("activation.feedback.action-bar.open-message", "&b🎤 Listening...");
+        final String closeMessage = getConfig().getString("activation.feedback.action-bar.close-message", "");
+
+        final boolean soundEnabled = getConfig().getBoolean("activation.feedback.sound.enabled", true);
+        final String openSound = getConfig().getString("activation.feedback.sound.open-sound", "minecraft:block.note_block.pling");
+        final float openVolume = (float) getConfig().getDouble("activation.feedback.sound.open-volume", 0.5);
+        final float openPitch = (float) getConfig().getDouble("activation.feedback.sound.open-pitch", 1.8);
+        final String closeSound = getConfig().getString("activation.feedback.sound.close-sound", "minecraft:block.note_block.bass");
+        final float closeVolume = (float) getConfig().getDouble("activation.feedback.sound.close-volume", 0.4);
+        final float closePitch = (float) getConfig().getDouble("activation.feedback.sound.close-pitch", 0.8);
+
+        return new CueSettings(actionBarEnabled, soundEnabled, openMessage, closeMessage,
+                openSound, openVolume, openPitch, closeSound, closeVolume, closePitch);
     }
 
     /**
@@ -228,6 +253,17 @@ public final class TranscribePlugin extends JavaPlugin {
 
         this.debugLevel = getConfig().getInt("debug.level", 0);
         this.audioListener.setDebugLevel(debugLevel);
+
+        final CueSettings newCues;
+        try {
+            newCues = buildCueSettings();
+        } catch (final IllegalArgumentException badCueConfig) {
+            getLogger().log(Level.SEVERE, "Reload failed due to invalid activation.feedback configuration - "
+                    + "keeping the previous configuration running.", badCueConfig);
+            sender.sendMessage("Reload failed: " + badCueConfig.getMessage() + " (see console; previous configuration is still running)");
+            return;
+        }
+        this.audioListener.setCueSettings(newCues);
 
         final SpeechRecognitionEngine newEngine;
         try {

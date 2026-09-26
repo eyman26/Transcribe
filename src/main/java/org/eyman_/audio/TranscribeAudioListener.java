@@ -1,6 +1,7 @@
 package org.eyman_.audio;
 
 import org.eyman_.TranscribePlugin;
+import org.eyman_.activation.CueSettings;
 import org.eyman_.api.TranscribeAPI;
 import org.eyman_.engine.SpeechRecognitionEngine;
 
@@ -10,7 +11,6 @@ import de.maxhenkel.voicechat.api.VoicechatConnection;
 import de.maxhenkel.voicechat.api.events.MicrophonePacketEvent;
 
 import org.bukkit.Bukkit;
-import org.bukkit.Sound;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -35,6 +36,7 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
     private final Logger logger;
     private final Map<UUID, CaptureSession> sessions = new ConcurrentHashMap<>();
     private volatile int debugLevel;
+    private volatile CueSettings cues;
 
     public TranscribeAudioListener(@NotNull final TranscribePlugin plugin) {
         this.plugin = plugin;
@@ -44,6 +46,12 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
     // Called by {@code /transcribe reload} so the debug level takes effect without a restart.
     public void setDebugLevel(final int debugLevel) {
         this.debugLevel = debugLevel;
+    }
+
+    // Called on enable and by {@code /transcribe reload} so a re-configured close cue (message,
+    // sound, volume, pitch) takes effect immediately, matching setDebugLevel()'s pattern.
+    public void setCueSettings(@NotNull final CueSettings cues) {
+        this.cues = Objects.requireNonNull(cues, "cues");
     }
 
     // Raw SVC packet ingestion (fires off the main thread, on SVC's own network/audio thread)
@@ -170,19 +178,19 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
                 });
     }
 
-    // Closing cue (opening cue already lives in ActivationManager, alongside its trigger) 
+    // Closing cue (opening cue lives in ActivationManager, alongside its trigger - both now
+    // read from the same configurable CueSettings, see setCueSettings() above)
 
     private void playCloseCue(@NotNull final UUID playerId) {
-        if (!plugin.getConfig().getBoolean("activation.feedback.sound", true)) {
-            return;
+        final CueSettings activeCues = this.cues;
+        if (activeCues == null) {
+            return; // onEnable() hasn't finished calling setCueSettings() yet
         }
         final Player player = Bukkit.getPlayer(playerId);
         if (player == null) {
             return;
         }
-        // Deliberately lower pitch/volume than the opening cue (Sound.BLOCK_NOTE_BLOCK_PLING at
-        // 0.5f/1.8f in ActivationManager) so open/close read as a distinct pair, not a repeat.
-        player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 0.4f, 0.8f);
+        activeCues.playCloseCue(player);
     }
 
     private void runOnMainThread(@NotNull final Runnable task) {
@@ -193,11 +201,6 @@ public final class TranscribeAudioListener implements TranscribeAPI.WindowLifecy
         }
     }
 
-    /**
-     * Per-player audio accumulator for one open Listen Window. One {@link OpusDecoder} is kept
-     * for the session's whole duration rather than recreated per packet, since Opus decoding is
-     * stateful/streaming.
-     */
     private static final class CaptureSession {
         private final OpusDecoder decoder;
         private final List<short[]> chunks = Collections.synchronizedList(new ArrayList<>());

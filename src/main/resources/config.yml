@@ -126,34 +126,62 @@ activation:
   window-seconds: 3.0
 
   # Active client action triggers. Options:
-  #   - SWAP_HAND          (Pressing F)
-  #   - SNEAK_SWAP_HAND    (Pressing Shift + F)
+  #   - OFF_HAND           (Pressing F)
+  #   - SNEAK_OFF_HAND     (Pressing Shift + F)
   #   - LEFT_CLICK         (Left Clicking)
   #   - SNEAK_LEFT_CLICK   (Pressing Shift + Left Click)
   #   - RIGHT_CLICK        (Right Clicking)
   #   - SNEAK_RIGHT_CLICK  (Pressing Shift + Right Click)
   #   - HOTBAR_SLOT        (Switching to slots in hotbar-slots below)
+  #   - SNEAK_HOTBAR_SLOT  (Switching to slots in hotbar-slots below, while sneaking)
+  # NOTE: if you're upgrading from an older config, SWAP_HAND and SNEAK_SWAP_HAND were
+  # renamed to OFF_HAND and SNEAK_OFF_HAND (same trigger, clearer name) - update your
+  # `triggers` list below or the old entries will just be ignored with a startup warning.
   # Note: LEFT_CLICK/SNEAK_LEFT_CLICK fire for left-clicking air or a block, but
   # NOT for left-clicking (attacking) an entity - Bukkit doesn't emit a click
   # event for that case, only a damage event, which this plugin doesn't hook.
   triggers:
-    - "SNEAK_SWAP_HAND"
+    - "SNEAK_OFF_HAND"
 
-  # Active when HOTBAR_SLOT is included in triggers. Hotbar slots 1 through 9.
+  # Active when HOTBAR_SLOT or SNEAK_HOTBAR_SLOT is included in triggers (shared list -
+  # both read the same slots, they differ only in whether sneaking is required).
+  # Hotbar slots 1 through 9.
   hotbar-slots:
     - 9
 
-  # Whether gesture actions (like Swap Hand F or Drop Item Q) should be cancelled
-  # so players don't actually drop items/swap hands when triggering activation.
+  # Whether gesture actions (sneak+click, swap hands/F, drop item/Q, hotbar slot select)
+  # should be cancelled so players don't actually perform the vanilla action (dropping
+  # items, swapping hands, etc.) just from triggering activation. Applies to every
+  # trigger above. One exception: cancelling a hotbar-slot switch (HOTBAR_SLOT /
+  # SNEAK_HOTBAR_SLOT) reverts the slot server-side, but the client has already
+  # switched the selection visually the instant the key/scroll input happened -
+  # this is a client/server sync quirk Bukkit/Paper can't fully suppress, not a bug.
   cancel-trigger-events: true
 
-  # Visual and auditory feedback when a Listen Window opens and closes. The
-  # open cue plays a pling and shows "Listening..." in the actionbar; the
-  # close cue (sound only, gated by the same `sound` flag) plays a lower,
-  # quieter bass note so open/close are distinguishable by ear.
+  # Fully configurable visual and auditory feedback when a Listen Window opens and
+  # closes - the actionbar text, the sound played, and its volume/pitch are all
+  # independently settable, and sounds can be any Minecraft sound key OR a resource-pack
+  # custom sound key (e.g. "mypack:spells.cast") - anything Player#playSound() accepts.
   feedback:
-    actionbar: true
-    sound: true
+    action-bar:
+      # Master switch for actionbar text on both open and close.
+      enabled: true
+      # Supports '&'-style legacy color codes (e.g. &b = aqua). Leave blank ('') to
+      # show nothing for that transition.
+      open-message: "&b🎤 Listening..."
+      close-message: ''
+    sound:
+      # Master switch for sound cues on both open and close.
+      enabled: true
+      # Sound keys: vanilla (e.g. "minecraft:block.note_block.pling") or a custom
+      # resource-pack sound (e.g. "mypack:spells.cast"). Leave blank ('') to disable
+      # just one of the two without disabling both.
+      open-sound: "minecraft:block.note_block.pling"
+      open-volume: 0.5
+      open-pitch: 1.8
+      close-sound: "minecraft:block.note_block.bass"
+      close-volume: 0.4
+      close-pitch: 0.8
 
   # PlaceholderAPI Condition Trigger
   placeholderapi:
