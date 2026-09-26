@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "org.eyman_"
-version = "0.1.0-SNAPSHOT"
+version = "0.1.0"
 description = "Transcribe - Voice-activated spell casting for Paper, powered by Simple Voice Chat + Vosk STT"
 
 java {
@@ -35,7 +35,7 @@ dependencies {
 
     compileOnly("org.jetbrains:annotations:26.0.1")
 
-    compileOnly("de.maxhenkel.voicechat:voicechat-api:2.5.27")
+    compileOnly("de.maxhenkel.voicechat:voicechat-api:2.6.24")
 
     compileOnly("me.clip:placeholderapi:2.11.6")
 

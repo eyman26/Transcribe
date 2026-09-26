@@ -4,7 +4,17 @@ main: org.eyman_.TranscribePlugin
 api-version: '1.21'
 author: Eyman
 description: Transcribe - Voice-activated spell casting for Paper, powered by Simple Voice Chat and Vosk/external STT.
+website: https://github.com/eyman26/Transcribe
+
+# Simple Voice Chat is a HARD dependency: Transcribe consumes its microphone packet
+# stream through the VoicechatPlugin API, so Bukkit/Paper must load voicechat first
+# and will refuse to enable this plugin without it. Its API is compileOnly in
+# build.gradle.kts and is never shaded - the real plugin is provided at runtime.
 depend: [voicechat]
+
+# PlaceholderAPI is optional: only needed if you configure the polled
+# activation.placeholderapi.* condition trigger. Without it, that one trigger
+# is disabled with a warning and everything else keeps working.
 softdepend: [PlaceholderAPI]
 
 commands:

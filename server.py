@@ -14,7 +14,7 @@ Wire protocol (one connection carries many sequential segments)
                                      (one or more binary frames per segment)
     Client -> Server   text frame   {"type": "end", "requestId": "..."}
 
-    Server -> Client   text frame   {"requestId": "...", "text": "ignis",
+    Server -> Client   text frame   {"requestId": "...", "text": "fire",
                                       "confidence": 0.94}
                           - or, on failure -
                         text frame   {"requestId": "...", "error": "..."}
@@ -40,7 +40,7 @@ Usage
 -----
     pip install websockets vosk
     python3 server.py --model /path/to/vosk-model-small-en-us \
-        --grammar ignis,lumos,glacio --host 0.0.0.0 --port 2700
+        --grammar fire,light,ice --host 0.0.0.0 --port 2700
 """
 
 from __future__ import annotations
@@ -240,7 +240,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True, help="Path to an unpacked Vosk model directory")
     parser.add_argument(
         "--grammar",
-        default="ignis,lumos,glacio",
+        default="fire,light,ice",
         help="Comma-separated constrained vocabulary, matching engine.internal.grammar in config.yml",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Interface to bind (default: 0.0.0.0)")

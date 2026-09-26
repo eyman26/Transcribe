@@ -24,8 +24,8 @@
 #       ("'fire'" or "(no keyword recognized)") with how long it took.
 #       Enough to answer "is it doing anything at all?"
 #   2 - + trigger detail: which specific trigger fired and for whom, windows
-#       that refreshed instead of opening, PlaceholderAPI polling, and audio
-#       capture sessions opening/closing with total samples captured.
+#       that refreshed instead of opening, and audio capture sessions
+#       opening/closing with total samples captured.
 #   3 - + per-packet audio: every individual microphone packet decoded, with
 #       byte/sample counts. Very chatty - only for deep troubleshooting of
 #       the SVC <-> opus4j audio pipeline itself.
