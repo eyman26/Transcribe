@@ -2,34 +2,15 @@
 #  Transcribe configuration
 #  made by eyman_
 # =============================================================================
-# This file is copied out of the plugin jar the first time Transcribe starts
-# (JavaPlugin#saveDefaultConfig) and is never overwritten automatically after
-# that, so it's safe to edit in place. Re-run /transcribe reload (or a
-# server restart) after changing anything here.
-#
-# YAML gotchas worth knowing before you edit this file:
-#   - Indentation is 2 spaces, and must be consistent and do not use tabs.
-#   - Strings containing `%`, `:` or leading/trailing spaces should be quoted,
-#     e.g. "effect give %player% minecraft:glowing 5 0 true".
-#   - Booleans are bare `true`/`false` (no quotes). Everything under
-#     `activation.placeholderapi.expected-value` is compared as a *string*,
-#     so quote it even though it reads like a boolean.
+# Copied out on first start and never overwritten. Run /transcribe reload
+# after editing (or restart).
+# Quote strings that contain % or : (e.g. "effect give %player% minecraft:glowing 5 0 true").
 
-# How much Transcribe logs to console, so you can see what it's actually
-# doing (or confirm it's doing nothing, and why). All debug lines are
-# prefixed "[Transcribe debug]" and logged at INFO level (so they show up
-# even if your host's log level filters out FINE/DEBUG). Takes effect
-# immediately on /transcribe reload - no restart needed.
-#   0 - off (default). Only the normal enable/disable/reload lines log.
-#   1 - lifecycle: Listen Windows opening, and each recognition result
-#       ("'fire'" or "(no keyword recognized)") with how long it took.
-#       Enough to answer "is it doing anything at all?"
-#   2 - + trigger detail: which specific trigger fired and for whom, windows
-#       that refreshed instead of opening, and audio capture sessions
-#       opening/closing with total samples captured.
-#   3 - + per-packet audio: every individual microphone packet decoded, with
-#       byte/sample counts. Very chatty - only for deep troubleshooting of
-#       the SVC <-> opus4j audio pipeline itself.
+# debug output goes to console at INFO, prefixed [Transcribe debug]
+#   0 - off (default)
+#   1 - windows opening + each recognition result and how long it took
+#   2 - + which trigger fired, refreshes, capture sessions
+#   3 - + every mic packet (very spammy)
 debug:
   level: 0
 
@@ -37,27 +18,9 @@ debug:
 # how that backend is configured.
 engine:
 
-  # Which SpeechRecognitionEngine implementation to use. One of:
-  #
-  #   INTERNAL - Embeds Vosk (JNI/native offline STT) directly in this JVM.
-  #     + No external process to run, deploy, or keep alive.
-  #     + No network hop, so lower latency and nothing to leak audio to.
-  #     - Uses server CPU/RAM for every recognition (mitigated heavily by the
-  #       constrained grammar below - idle cost is effectively zero).
-  #     - You must download and unpack a Vosk acoustic model onto this server
-  #       (see engine.internal.model-path).
-  #
-  #   EXTERNAL - Streams PCM audio to a separate STT microservice over a
-  #     WebSocket connection (see server.py shipped alongside this plugin for
-  #     a complete, drop-in reference implementation of that service).
-  #     + Keeps the Paper server's own CPU/RAM footprint minimal.
-  #     + The STT backend can be swapped, scaled, or run on dedicated/GPU
-  #       hardware independently of the Minecraft server.
-  #     - Adds a network hop (latency + a new failure mode to monitor).
-  #     - You are responsible for running, securing, and keeping that service
-  #       online (server.py is a reference/demo, not a hardened deployment).
-  #
-  # Changing this value requires a plugin reload/restart to take effect.
+  # INTERNAL - Vosk runs inside the server JVM. Needs a model on disk, uses some CPU per recognition.
+  # EXTERNAL - audio goes to a separate STT service over a websocket (see server.py).
+  #            Less load on the MC server but you have to run and secure that service yourself.
   mode: INTERNAL
 
   # The sample rate, in Hz, that captured PCM audio is delivered at before
@@ -80,22 +43,9 @@ engine:
     # You do not need a large general-purpose model.
     model-path: models/vosk-model-small-en-us-0.15
 
-    # The constrained vocabulary the recognizer is limited to. This is the
-    # single biggest lever on both CPU usage and recognition accuracy:
-    # restricting Vosk to a handful of words (rather than its full open
-    # vocabulary) collapses the decoder's search space to almost nothing,
-    # which is what keeps idle/background CPU usage near zero even while
-    # actively listening.
-    #
-    # Rules of thumb when choosing words:
-    #   - Prefer short, phonetically distinct words. "fire" and "light" are
-    #     easy for the recognizer to tell apart; "fire" and "fyre" are not.
-    #   - Every word here should correspond to something your server actually
-    #     reacts to (see recognition.console-commands below, or a listener
-    #     for VoiceWordSpokenEvent registered by another plugin).
-    #   - Casing doesn't matter; everything is normalized to lowercase.
-    #   - This list feeds directly into Vosk's JSON grammar array, e.g.
-    #     ["fire", "light", "ice"] - keep entries simple, single words.
+    # Words the recognizer is allowed to hear. Keep it short, single words,
+    # and make them sound different from each other ("fire" and "fyre" won't work).
+    # Casing doesn't matter.
     grammar:
       - fire    # example: fire/damage spell
       - light    # example: light-giving spell
@@ -216,3 +166,12 @@ recognition:
   #   - "spellcast trigger %player% %keyword%"
   console-commands:
     - "effect give %player% minecraft:glowing 5 0 true"
+
+
+# Permission defaults for the per-keyword nodes (transcribe.keyword.<id>)
+# that are registered for every file in keywords/. Players always also need transcribe.use.
+#   TRUE    - everyone may speak every keyword unless a permissions plugin denies it (default)
+#   FALSE   - nobody, until granted the node (or transcribe.keyword.*)
+#   OP / NOT_OP
+permissions:
+  keyword-default: TRUE

@@ -1,0 +1,74 @@
+# Example keyword file. One file per keyword in plugins/Transcribe/keywords/.
+# Create new ones with:  /transcribe add keyword <word>   then /transcribe reload
+# The file name does not matter; the `keyword` below is what players say.
+
+# Set to true to make this keyword live. Disabled keywords are not listened for.
+enabled: false
+
+# The spoken word (a single word: lowercase letters, digits, apostrophes).
+keyword: "example"
+
+# Other words that should trigger the same keyword.
+aliases: []
+
+# Permission a player needs to trigger this keyword. Leave empty to use the default node,
+# transcribe.keyword.<id>, where <id> is the keyword. Grant transcribe.keyword.* for all of them,
+# or set any custom node here (e.g. "myserver.spells.example").
+# Every player also needs the base node transcribe.use.
+permission: ""
+
+# Minimum recognition confidence (0.0 - 1.0) for the keyword to fire. Speech the engine is less
+# sure about is ignored, which cuts false triggers from noise and similar-sounding words.
+# 0 accepts everything; ~0.6 is a good start; raise it for dangerous spells.
+# (Engines that cannot score a result report 1.0.)
+min-confidence: 0.60
+
+# Seconds a player must wait before this keyword works for them again (0 = no cooldown).
+# Players with transcribe.bypass.cooldown ignore it.
+cooldown-seconds: 5
+
+# What runs when the keyword is recognized.
+#   executor: CONSOLE (full permission) or PLAYER (runs as the speaker)
+#   Placeholders: %player% %uuid% %keyword% %keyword_id% %spoken% %confidence% %confidence_percent% %world% %x% %y% %z%
+#   (PlaceholderAPI placeholders also work when it is installed)
+actions:
+  executor: CONSOLE
+  commands:
+    - "effect give %player% minecraft:glowing 5 0 true"
+
+# Integrations with other plugins. Each section runs right after `actions` when it is enabled
+# AND the plugin is installed (otherwise it is silently skipped). All Transcribe placeholders work
+# in skills and commands.
+hooks:
+
+  # MythicMobs: casts a MythicMobs skill with the speaker as the caster.
+  mythicmobs:
+    enabled: false
+    skill: "Fireball"
+    commands: []        # optional extra commands to run afterwards
+
+  # Nexo / ItemsAdder / Oraxen: custom item and block plugins are driven through their commands.
+  nexo:
+    enabled: false
+    executor: CONSOLE   # or PLAYER
+    commands:
+      - "nexo give %player% fire_wand 1"
+  itemsadder:
+    enabled: false
+    executor: CONSOLE
+    commands:
+      - "iagive %player% my_namespace:fire_wand 1"
+  oraxen:
+    enabled: false
+    executor: CONSOLE
+    commands:
+      - "o give %player% fire_wand 1"
+
+  # Command bridge: ANY other plugin works without code. Pick any section name, set `plugin` to the
+  # Bukkit plugin name (it must be installed) and list the commands to run.
+  my_other_plugin:
+    enabled: false
+    plugin: "SomePlugin"
+    executor: CONSOLE
+    commands:
+      - "someplugin cast %player% fireball"

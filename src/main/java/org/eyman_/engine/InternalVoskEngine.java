@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.jetbrains.annotations.NotNull;
 import org.vosk.LibVosk;
 import org.vosk.LogLevel;
 import org.vosk.Model;
@@ -17,7 +16,6 @@ import java.nio.file.Path;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -28,11 +26,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * In nprocess STT via the Vosk JNI bindings. One read-only shared {@link Model} for the plugin's
- * lifetime, but a fresh {@link Recognizer} per call, so it's thread safe across concurrent
- * speakers with zero locking.
- */
 public final class InternalVoskEngine implements SpeechRecognitionEngine {
 
     private static final int DEFAULT_TARGET_SAMPLE_RATE_HZ = 16_000;
@@ -48,23 +41,21 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
     private final ExecutorService recognitionExecutor;
     private volatile boolean shutdown;
 
-    public InternalVoskEngine(@NotNull final Path modelDirectory,
-                               @NotNull final List<String> vocabulary,
-                               final int targetSampleRateHz,
-                               @NotNull final Logger logger) throws IOException {
-        Objects.requireNonNull(modelDirectory, "modelDirectory");
-        Objects.requireNonNull(vocabulary, "vocabulary");
-        this.logger = Objects.requireNonNull(logger, "logger");
+    public InternalVoskEngine(Path modelDirectory,
+                               List<String> vocabulary,
+                               int targetSampleRateHz,
+                               Logger logger) throws IOException {
+        this.logger = logger;
 
         if (vocabulary.isEmpty()) {
             throw new IllegalArgumentException(
-                    "vocabulary must not be empty - an unconstrained Vosk grammar defeats the CPU-gating design goal.");
+                    "grammar is empty, add at least one word");
         }
         if (targetSampleRateHz <= 0) {
             throw new IllegalArgumentException("targetSampleRateHz must be positive, was: " + targetSampleRateHz);
         }
         if (!modelDirectory.toFile().isDirectory()) {
-            throw new IOException("Vosk model directory does not exist or is not a directory: " + modelDirectory);
+            throw new IOException("Vosk model folder not found: " + modelDirectory);
         }
 
         // Vosks native Kaldi logs straight to stderr; quiet it down.
@@ -77,41 +68,43 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
         this.recognitionExecutor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("transcribe-vosk-worker-", 0).factory());
 
-        this.logger.info(() -> "InternalVoskEngine ready. grammar=" + grammarJson
+        this.logger.info("Vosk ready, grammar=" + grammarJson
                 + " targetSampleRateHz=" + targetSampleRateHz);
     }
 
-    public InternalVoskEngine(@NotNull final Path modelDirectory,
-                               @NotNull final List<String> vocabulary,
-                               @NotNull final Logger logger) throws IOException {
+    public InternalVoskEngine(Path modelDirectory,
+                               List<String> vocabulary,
+                               Logger logger) throws IOException {
         this(modelDirectory, vocabulary, DEFAULT_TARGET_SAMPLE_RATE_HZ, logger);
     }
 
     @Override
-    @NotNull
-    public CompletableFuture<String> processAudio(@NotNull final UUID playerId,
-                                                    @NotNull final short[] pcm16Samples,
-                                                    final int sampleRateHertz) {
-        Objects.requireNonNull(playerId, "playerId");
-        Objects.requireNonNull(pcm16Samples, "pcm16Samples");
+    public CompletableFuture<String> processAudio(UUID playerId,
+                                                    short[] pcm16Samples,
+                                                    int sampleRateHertz) {
+        return processAudioDetailed(playerId, pcm16Samples, sampleRateHertz).thenApply(RecognitionResult::text);
+    }
+
+    @Override
+    public CompletableFuture<RecognitionResult> processAudioDetailed(UUID playerId,
+                                                                     short[] pcm16Samples,
+                                                                     int sampleRateHertz) {
 
         if (shutdown) {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("InternalVoskEngine has already been shut down."));
         }
         if (pcm16Samples.length == 0) {
-            return CompletableFuture.completedFuture("");
+            return CompletableFuture.completedFuture(RecognitionResult.NONE);
         }
 
         return CompletableFuture.supplyAsync(
                 () -> recognizeBlocking(playerId, pcm16Samples, sampleRateHertz), recognitionExecutor);
     }
 
-    // Runs on a virtual worker thread, each call owns its own Recognizer, so no locking needed.
-    @NotNull
-    private String recognizeBlocking(@NotNull final UUID playerId,
-                                      @NotNull final short[] rawSamples,
-                                      final int sourceSampleRateHertz) {
+    private RecognitionResult recognizeBlocking(UUID playerId,
+                                      short[] rawSamples,
+                                      int sourceSampleRateHertz) {
         final short[] samples = (sourceSampleRateHertz == targetSampleRateHz)
                 ? rawSamples
                 : resampleLinear(rawSamples, sourceSampleRateHertz, targetSampleRateHz);
@@ -125,53 +118,22 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
 
             final String resultJson = recognizer.getFinalResult();
             logger.info("[Transcribe debug] raw Vosk result for " + playerId + ": " + resultJson);
-            return extractRecognizedKeyword(resultJson);
-        } catch (final IOException e) {
+            return RecognitionResult.fromVoskJson(resultJson, allowedKeywords);
+        } catch (IOException e) {
             logger.log(Level.WARNING, "Vosk recognizer failed for player " + playerId, e);
             throw new CompletionException(e);
         }
     }
 
-    /**
-     * Returns the recognized keyword only if it is an exact member of the constrained grammar
-     * anything else (including Vosks unknown token sentinel) is normalized to an empty string
-     */
-    @NotNull
-    private String extractRecognizedKeyword(@NotNull final String resultJson) {
-        final String text = switch (safeParseText(resultJson)) {
-            case null -> "";
-            case String t -> t.trim().toLowerCase(Locale.ROOT);
-        };
-
-        if (text.isEmpty() || text.equals(UNKNOWN_TOKEN)) {
-            return "";
-        }
-        return allowedKeywords.contains(text) ? text : "";
-    }
-
-    private String safeParseText(@NotNull final String resultJson) {
-        try {
-            final JsonObject obj = JsonParser.parseString(resultJson).getAsJsonObject();
-            if (obj.has("text") && !obj.get("text").isJsonNull()) {
-                return obj.get("text").getAsString();
-            }
-            return "";
-        } catch (final RuntimeException malformed) {
-            return "";
-        }
-    }
-
-    @NotNull
-    private static Set<String> buildAllowedKeywordSet(@NotNull final List<String> vocabulary) {
+    private static Set<String> buildAllowedKeywordSet(List<String> vocabulary) {
         final Set<String> normalized = new LinkedHashSet<>(vocabulary.size());
-        for (final String word : vocabulary) {
+        for (String word : vocabulary) {
             normalized.add(word.toLowerCase(Locale.ROOT).trim());
         }
         return Set.copyOf(normalized);
     }
 
-    @NotNull
-    private String buildGrammarJson(@NotNull final Set<String> vocabulary) {
+    private String buildGrammarJson(Set<String> vocabulary) {
         final LinkedHashSet<String> words = new LinkedHashSet<>(vocabulary);
         words.add(UNKNOWN_TOKEN);
         final JsonArray array = new JsonArray();
@@ -180,8 +142,7 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
     }
 
     // Naive linear interpolation, fine for keyword recognition, not general audio.
-    @NotNull
-    private static short[] resampleLinear(@NotNull final short[] input, final int fromHz, final int toHz) {
+    private static short[] resampleLinear(short[] input, int fromHz, int toHz) {
         if (input.length == 0 || fromHz == toHz) {
             return input;
         }
@@ -200,10 +161,9 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
         return output;
     }
 
-    @NotNull
-    private static byte[] shortsToLittleEndianBytes(@NotNull final short[] samples) {
+    private static byte[] shortsToLittleEndianBytes(short[] samples) {
         final ByteBuffer buffer = ByteBuffer.allocate(samples.length * 2).order(ByteOrder.LITTLE_ENDIAN);
-        for (final short sample : samples) {
+        for (short sample : samples) {
             buffer.putShort(sample);
         }
         return buffer.array();
@@ -221,14 +181,14 @@ public final class InternalVoskEngine implements SpeechRecognitionEngine {
             if (!recognitionExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                 recognitionExecutor.shutdownNow();
             }
-        } catch (final InterruptedException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             recognitionExecutor.shutdownNow();
         }
 
         try {
             model.close();
-        } catch (final RuntimeException e) {
+        } catch (RuntimeException e) {
             logger.log(Level.WARNING, "Error closing Vosk model", e);
         }
 

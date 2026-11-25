@@ -1,7 +1,7 @@
 name: Transcribe
 version: '${version}'
 main: org.eyman_.TranscribePlugin
-api-version: '1.21'
+api-version: '${apiVersion}'
 author: Eyman
 description: Transcribe - Voice-activated spell casting for Paper, powered by Simple Voice Chat and Vosk/external STT.
 website: https://github.com/eyman26/Transcribe
@@ -15,16 +15,49 @@ depend: [voicechat]
 # PlaceholderAPI is optional: only needed if you configure the polled
 # activation.placeholderapi.* condition trigger. Without it, that one trigger
 # is disabled with a warning and everything else keeps working.
-softdepend: [PlaceholderAPI]
+softdepend: [PlaceholderAPI, MythicMobs, Nexo, ItemsAdder, Oraxen]
 
 commands:
   transcribe:
-    description: Manage the Transcribe plugin.
-    usage: /transcribe reload
-    permission: transcribe.reload
-    permission-message: You do not have permission to use this command.
+    description: Manage Transcribe.
+    usage: /<command> add keyword|mute|unmute|list|reload
+    aliases: [tsc]
 
 permissions:
+  transcribe.use:
+    description: Base permission to open Listen Windows and have speech recognized.
+    default: true
+  transcribe.keyword.*:
+    description: Speak any single-word keyword (individual nodes transcribe.keyword.<id> are registered at load).
+    default: false
+  transcribe.bypass.cooldown:
+    description: Ignore keyword cooldowns.
+    default: op
+  transcribe.admin:
+    description: All Transcribe administration.
+    default: op
+    children:
+      transcribe.admin.add: true
+      transcribe.admin.list: true
+      transcribe.admin.mute: true
+      transcribe.admin.unmute: true
+      transcribe.admin.reload: true
+  transcribe.admin.add:
+    description: Use /transcribe add.
+    default: op
+  transcribe.admin.list:
+    description: Use /transcribe list.
+    default: op
+  transcribe.admin.mute:
+    description: Use /transcribe mute.
+    default: op
+  transcribe.admin.unmute:
+    description: Use /transcribe unmute.
+    default: op
+  transcribe.admin.reload:
+    description: Use /transcribe reload.
+    default: op
+  # Legacy node from earlier versions, still honoured for /transcribe reload.
   transcribe.reload:
     description: Allows reloading Transcribe's configuration without a server restart.
     default: op

@@ -12,22 +12,17 @@ import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.eyman_.api.TranscribeAPI;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/**
- * Detects the configured client actions/conditions that open a player's Listen Window.
- */
 public final class ActivationManager implements Listener {
 
     public enum TriggerType {
@@ -40,11 +35,10 @@ public final class ActivationManager implements Listener {
         HOTBAR_SLOT,
         SNEAK_HOTBAR_SLOT;
 
-        @Nullable
-        public static TriggerType parse(@NotNull final String raw) {
+        public static TriggerType parse(String raw) {
             try {
                 return valueOf(raw.trim().toUpperCase(Locale.ROOT));
-            } catch (final IllegalArgumentException e) {
+            } catch (IllegalArgumentException e) {
                 return null;
             }
         }
@@ -54,20 +48,22 @@ public final class ActivationManager implements Listener {
     private final Logger logger;
     private final ActivationConfig config;
     private final boolean placeholderApiAvailable;
+    private final Predicate<Player> blocked;
 
     private boolean registered;
     private BukkitTask placeholderPollingTask;
 
-    public ActivationManager(@NotNull final JavaPlugin plugin, @NotNull final ActivationConfig config) {
-        this.plugin = Objects.requireNonNull(plugin, "plugin");
+    public ActivationManager(JavaPlugin plugin, ActivationConfig config,
+                             Predicate<Player> blocked) {
+        this.blocked = blocked;
+        this.plugin = plugin;
         this.logger = plugin.getLogger();
-        this.config = Objects.requireNonNull(config, "config");
+        this.config = config;
         this.placeholderApiAvailable = config.papiPlaceholder() != null
                 && plugin.getServer().getPluginManager().isPluginEnabled("PlaceholderAPI");
 
         if (config.papiPlaceholder() != null && !placeholderApiAvailable) {
-            logger.warning("A PlaceholderAPI activation condition is configured, but PlaceholderAPI "
-                    + "is not installed/enabled - that trigger will be disabled.");
+            logger.warning("PlaceholderAPI trigger is configured but PlaceholderAPI isn't installed, skipping it.");
         }
     }
 
@@ -83,13 +79,11 @@ public final class ActivationManager implements Listener {
             final long intervalTicks = Math.max(1, config.papiPollIntervalTicks());
             this.placeholderPollingTask = plugin.getServer().getScheduler().runTaskTimer(
                     plugin, this::pollPlaceholderConditions, intervalTicks, intervalTicks);
-            logger.info(() -> "PlaceholderAPI activation condition '" + config.papiPlaceholder()
-                    + "' == '" + config.papiExpectedValue() + "' is being polled every "
-                    + intervalTicks + " ticks.");
+            logger.info("Polling " + config.papiPlaceholder() + " every " + intervalTicks + " ticks");
         }
 
         if (config.debugLevel() >= 1) {
-            logger.info("[Transcribe debug] ActivationManager registered. Active triggers: "
+            logger.info("[Transcribe debug] triggers: "
                     + config.enabledTriggers() + " | hotbar slots: " + config.hotbarSlots()
                     + " | PlaceholderAPI trigger: " + placeholderApiAvailable);
         }
@@ -105,7 +99,7 @@ public final class ActivationManager implements Listener {
     }
 
     @EventHandler
-    public void onSwapHandItems(@NotNull final PlayerSwapHandItemsEvent event) {
+    public void onSwapHandItems(PlayerSwapHandItemsEvent event) {
         final Player player = event.getPlayer();
         final boolean sneaking = player.isSneaking();
 
@@ -119,7 +113,7 @@ public final class ActivationManager implements Listener {
     }
 
     @EventHandler
-    public void onPlayerInteract(@NotNull final PlayerInteractEvent event) {
+    public void onPlayerInteract(PlayerInteractEvent event) {
         final Player player = event.getPlayer();
         final Action action = event.getAction();
         final boolean sneaking = player.isSneaking();
@@ -144,7 +138,7 @@ public final class ActivationManager implements Listener {
     }
 
     @EventHandler
-    public void onItemHeld(@NotNull final PlayerItemHeldEvent event) {
+    public void onItemHeld(PlayerItemHeldEvent event) {
         final Player player = event.getPlayer();
         final boolean sneaking = player.isSneaking();
         final int newSlot0Based = event.getNewSlot();
@@ -167,11 +161,11 @@ public final class ActivationManager implements Listener {
         if (placeholder == null) {
             return;
         }
-        for (final Player player : plugin.getServer().getOnlinePlayers()) {
+        for (Player player : plugin.getServer().getOnlinePlayers()) {
             final String resolved;
             try {
                 resolved = PlaceholderAPI.setPlaceholders(player, placeholder);
-            } catch (final RuntimeException papiError) {
+            } catch (RuntimeException papiError) {
                 logger.log(Level.WARNING, "Failed to resolve PlaceholderAPI condition '" + placeholder
                         + "' for " + player.getName(), papiError);
                 continue;
@@ -182,7 +176,13 @@ public final class ActivationManager implements Listener {
         }
     }
 
-    private void triggerActivation(@NotNull final Player player, @NotNull final String reason) {
+    private void triggerActivation(Player player, String reason) {
+        if (blocked.test(player)) {
+            if (config.debugLevel() >= 2) {
+                logger.info("[Transcribe debug] " + reason + " ignored for " + player.getName() + " (muted)");
+            }
+            return;
+        }
         if (config.debugLevel() >= 2) {
             logger.info("[Transcribe debug] Trigger fired: " + reason + " by " + player.getName());
         }
@@ -198,22 +198,17 @@ public final class ActivationManager implements Listener {
         }
     }
 
-    public record ActivationConfig(@NotNull Duration windowDuration,
-                                   @NotNull Set<TriggerType> enabledTriggers,
-                                   @NotNull List<Integer> hotbarSlots,
+    public record ActivationConfig(Duration windowDuration,
+                                   Set<TriggerType> enabledTriggers,
+                                   List<Integer> hotbarSlots,
                                    boolean cancelTriggerEvents,
-                                   @NotNull CueSettings cues,
-                                   @Nullable String papiPlaceholder,
-                                   @NotNull String papiExpectedValue,
+                                   CueSettings cues,
+                                   String papiPlaceholder,
+                                   String papiExpectedValue,
                                    long papiPollIntervalTicks,
                                    int debugLevel) {
 
         public ActivationConfig {
-            Objects.requireNonNull(windowDuration, "windowDuration");
-            Objects.requireNonNull(enabledTriggers, "enabledTriggers");
-            Objects.requireNonNull(hotbarSlots, "hotbarSlots");
-            Objects.requireNonNull(cues, "cues");
-            Objects.requireNonNull(papiExpectedValue, "papiExpectedValue");
 
             if (windowDuration.isZero() || windowDuration.isNegative()) {
                 throw new IllegalArgumentException("windowDuration must be positive, was: " + windowDuration);

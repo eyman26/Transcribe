@@ -4,6 +4,18 @@ import org.eyman_.activation.ActivationManager;
 import org.eyman_.activation.CueSettings;
 import org.eyman_.api.TranscribeAPI;
 import org.eyman_.audio.TranscribeAudioListener;
+import org.eyman_.api.AccessPolicy;
+import org.eyman_.command.TranscribeCommand;
+import org.eyman_.cooldown.CooldownTracker;
+import org.eyman_.dispatch.ActionRunner;
+import org.eyman_.hook.HookInvocation;
+import org.eyman_.hook.HookRegistry;
+import org.eyman_.hook.PluginHook;
+import org.eyman_.keyword.KeywordDefinition;
+import org.eyman_.keyword.KeywordRegistry;
+import org.eyman_.keyword.WordParser;
+import org.eyman_.mute.MuteManager;
+import org.eyman_.placeholder.PlaceholderResolver;
 import org.eyman_.engine.ExternalWebSocketEngine;
 import org.eyman_.engine.InternalVoskEngine;
 import org.eyman_.engine.SpeechRecognitionEngine;
@@ -13,17 +25,18 @@ import de.maxhenkel.voicechat.api.VoicechatApi;
 import de.maxhenkel.voicechat.api.VoicechatPlugin;
 import de.maxhenkel.voicechat.api.events.EventRegistration;
 import de.maxhenkel.voicechat.api.events.MicrophonePacketEvent;
-import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.PluginCommand;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -37,10 +50,16 @@ public final class TranscribePlugin extends JavaPlugin {
     private SpeechRecognitionEngine speechEngine;
     private ActivationManager activationManager;
     private TranscribeAudioListener audioListener;
+    private KeywordRegistry keywordRegistry;
+    private MuteManager muteManager;
+    private ActionRunner actionRunner;
+    private AccessPolicy accessPolicy;
+    private HookRegistry hookRegistry;
+    // TODO: cooldowns aren't cleared on quit
+    private final CooldownTracker cooldowns = new CooldownTracker();
     private List<String> consoleCommandTemplates = List.of();
     private volatile int debugLevel;
 
-    // Populated by the VoicechatPlugin hook below.
     private volatile VoicechatApi voicechatApi;
 
     @Override
@@ -48,8 +67,7 @@ public final class TranscribePlugin extends JavaPlugin {
         saveDefaultConfig();
 
         if (getServer().getPluginManager().getPlugin(SIMPLE_VOICE_CHAT_PLUGIN_NAME) == null) {
-            getLogger().severe("Simple Voice Chat is not installed on this server. "
-                    + "Transcribe cannot function without it - disabling.");
+            getLogger().severe("Simple Voice Chat is missing, disabling Transcribe.");
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -62,8 +80,8 @@ public final class TranscribePlugin extends JavaPlugin {
         this.audioListener.setDebugLevel(debugLevel);
         try {
             this.audioListener.setCueSettings(buildCueSettings());
-        } catch (final IllegalArgumentException badCueConfig) {
-            getLogger().log(Level.SEVERE, "Invalid activation.feedback configuration in config.yml - disabling.", badCueConfig);
+        } catch (IllegalArgumentException e) {
+            getLogger().log(Level.SEVERE, "Bad activation.feedback config, disabling.", e);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -74,10 +92,20 @@ public final class TranscribePlugin extends JavaPlugin {
             return;
         }
 
+        this.hookRegistry = new HookRegistry(getServer(), getLogger());
+        this.keywordRegistry = new KeywordRegistry(this);
+        KeywordRegistry.Snapshot keywords = keywordRegistry.scan();
+        keywordRegistry.install(keywords);
+        logKeywordProblems(keywords);
+        this.muteManager = new MuteManager(getDataFolder().toPath().resolve("mutes.yml"), getLogger());
+        this.muteManager.load();
+        this.accessPolicy = new AccessPolicy(muteManager);
+        this.actionRunner = new ActionRunner(this, new PlaceholderResolver(this));
+
         try {
-            this.speechEngine = buildConfiguredEngine();
-        } catch (final Exception e) {
-            getLogger().log(Level.SEVERE, "Failed to initialize the configured speech recognition engine - disabling.", e);
+            this.speechEngine = buildConfiguredEngine(keywords);
+        } catch (Exception e) {
+            getLogger().log(Level.SEVERE, "Couldn't start the speech engine, disabling.", e);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -86,20 +114,30 @@ public final class TranscribePlugin extends JavaPlugin {
 
         try {
             this.activationManager = buildActivationManager();
-        } catch (final IllegalArgumentException badConfig) {
-            getLogger().log(Level.SEVERE, "Invalid activation configuration in config.yml - disabling.", badConfig);
+        } catch (IllegalArgumentException e) {
+            getLogger().log(Level.SEVERE, "Bad activation config, disabling.", e);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
         activationManager.register();
 
+        PluginCommand transcribeCommand = getCommand("transcribe");
+        if (transcribeCommand != null) {
+            TranscribeCommand handler = new TranscribeCommand(this, keywordRegistry, muteManager);
+            transcribeCommand.setExecutor(handler);
+            transcribeCommand.setTabCompleter(handler);
+        }
+
         getLogger().info("Transcribe enabled: engine=" + getConfig().getString("engine.mode", "internal")
                 + " activation-window=" + getConfig().getDouble("activation.window-seconds", 3.0) + "s"
-                + " debug-level=" + debugLevel);
+                + " keywords=" + keywords.byId().size() + " debug-level=" + debugLevel);
     }
 
     @Override
     public void onDisable() {
+        if (muteManager != null) {
+            muteManager.shutdown();
+        }
         if (activationManager != null) {
             activationManager.shutdown();
         }
@@ -110,34 +148,34 @@ public final class TranscribePlugin extends JavaPlugin {
         getLogger().info("Transcribe disabled.");
     }
 
-    // Registers with Simple Voice Chat's Bukkit service, the standard third-party integration point.
     private boolean registerVoicechatServiceHook() {
-        final BukkitVoicechatService service = getServer().getServicesManager().load(BukkitVoicechatService.class);
+        BukkitVoicechatService service = getServer().getServicesManager().load(BukkitVoicechatService.class);
         if (service == null) {
-            getLogger().severe("Simple Voice Chat is installed but its Bukkit service is not available yet "
-                    + "(unexpected load order) - disabling.");
+            getLogger().severe("Simple Voice Chat service isn't available (load order?), disabling.");
             return false;
         }
         service.registerPlugin(new TranscribeVoicechatHook());
-        getLogger().info("Registered Transcribe with the Simple Voice Chat service.");
         return true;
     }
 
-    @NotNull
-    private SpeechRecognitionEngine buildConfiguredEngine() throws IOException {
-        final String mode = getConfig().getString("engine.mode", "INTERNAL").toUpperCase(Locale.ROOT);
-        final int sampleRateHertz = getConfig().getInt("engine.sample-rate-hertz", 16_000);
+    private SpeechRecognitionEngine buildConfiguredEngine(KeywordRegistry.Snapshot keywords) throws IOException {
+        String mode = getConfig().getString("engine.mode", "INTERNAL").toUpperCase(Locale.ROOT);
+        int sampleRateHertz = getConfig().getInt("engine.sample-rate-hertz", 16_000);
 
         return switch (mode) {
             case "INTERNAL" -> {
-                final List<String> grammar = getConfig().getStringList("engine.internal.grammar");
-                final Path modelPath = getDataFolder().toPath()
-                        .resolve(getConfig().getString("engine.internal.model-path", "models/vosk-model-small-en-us"));
+                java.util.Set<String> merged = new java.util.LinkedHashSet<>(keywords.grammar());
+                for (String word : getConfig().getStringList("engine.internal.grammar")) {
+                    merged.add(WordParser.normalize(word));
+                }
+                List<String> grammar = List.copyOf(merged);
+                Path modelPath = getDataFolder().toPath()
+                        .resolve(getConfig().getString("engine.internal.model-path", "models/vosk-model-small-en-us-0.15"));
                 yield new InternalVoskEngine(modelPath, grammar, sampleRateHertz, getLogger());
             }
             case "EXTERNAL" -> {
-                final URI endpoint = URI.create(getConfig().getString("engine.external.uri", "ws://localhost:2700"));
-                final Duration requestTimeout = Duration.ofMillis(
+                URI endpoint = URI.create(getConfig().getString("engine.external.uri", "ws://localhost:2700"));
+                Duration requestTimeout = Duration.ofMillis(
                         getConfig().getLong("engine.external.request-timeout-millis", 5_000));
                 yield new ExternalWebSocketEngine(endpoint, requestTimeout, getLogger());
             }
@@ -146,16 +184,15 @@ public final class TranscribePlugin extends JavaPlugin {
         };
     }
 
-    @NotNull
     private ActivationManager buildActivationManager() {
-        final Duration windowDuration = Duration.ofMillis(
+        Duration windowDuration = Duration.ofMillis(
                 Math.round(getConfig().getDouble("activation.window-seconds", 3.0) * 1000.0));
 
-        final List<String> rawTriggers = getConfig().getStringList("activation.triggers");
-        final Set<ActivationManager.TriggerType> enabledTriggers = java.util.EnumSet.noneOf(ActivationManager.TriggerType.class);
+        List<String> rawTriggers = getConfig().getStringList("activation.triggers");
+        Set<ActivationManager.TriggerType> enabledTriggers = EnumSet.noneOf(ActivationManager.TriggerType.class);
 
-        for (final String rawTrigger : rawTriggers) {
-            final ActivationManager.TriggerType type = ActivationManager.TriggerType.parse(rawTrigger);
+        for (String rawTrigger : rawTriggers) {
+            ActivationManager.TriggerType type = ActivationManager.TriggerType.parse(rawTrigger);
             if (type != null) {
                 enabledTriggers.add(type);
             } else {
@@ -164,59 +201,84 @@ public final class TranscribePlugin extends JavaPlugin {
         }
 
         // Config slots are 1-indexed (1-9), Bukkit slots are 0-indexed (0-8).
-        final List<Integer> hotbarSlots = getConfig().getIntegerList("activation.hotbar-slots").stream()
+        List<Integer> hotbarSlots = getConfig().getIntegerList("activation.hotbar-slots").stream()
                 .map(slot -> slot - 1)
                 .filter(slot -> slot >= 0 && slot <= 8)
                 .toList();
 
-        final boolean cancelTriggerEvents = getConfig().getBoolean("activation.cancel-trigger-events", true);
-        final CueSettings cues = buildCueSettings();
+        boolean cancelTriggerEvents = getConfig().getBoolean("activation.cancel-trigger-events", true);
+        CueSettings cues = buildCueSettings();
 
-        final String rawPlaceholder = getConfig().getString("activation.placeholderapi.placeholder", "");
-        final String papiPlaceholder = (rawPlaceholder == null || rawPlaceholder.isBlank()) ? null : rawPlaceholder;
-        final String papiExpectedValue = getConfig().getString("activation.placeholderapi.expected-value", "true");
-        final long papiPollIntervalTicks = getConfig().getLong("activation.placeholderapi.poll-interval-ticks", 10);
+        String rawPlaceholder = getConfig().getString("activation.placeholderapi.placeholder", "");
+        String papiPlaceholder = (rawPlaceholder == null || rawPlaceholder.isBlank()) ? null : rawPlaceholder;
+        String papiExpectedValue = getConfig().getString("activation.placeholderapi.expected-value", "true");
+        long papiPollIntervalTicks = getConfig().getLong("activation.placeholderapi.poll-interval-ticks", 10);
 
-        final ActivationManager.ActivationConfig activationConfig = new ActivationManager.ActivationConfig(
+        ActivationManager.ActivationConfig activationConfig = new ActivationManager.ActivationConfig(
                 windowDuration, enabledTriggers, hotbarSlots, cancelTriggerEvents,
                 cues, papiPlaceholder, papiExpectedValue, papiPollIntervalTicks,
                 debugLevel);
 
-        return new ActivationManager(this, activationConfig);
+        return new ActivationManager(this, activationConfig, this::isBlocked);
     }
 
-    @NotNull
     private CueSettings buildCueSettings() {
-        final boolean actionBarEnabled = getConfig().getBoolean("activation.feedback.action-bar.enabled", true);
-        final String openMessage = getConfig().getString("activation.feedback.action-bar.open-message", "&b🎤 Listening...");
-        final String closeMessage = getConfig().getString("activation.feedback.action-bar.close-message", "");
+        boolean actionBarEnabled = getConfig().getBoolean("activation.feedback.action-bar.enabled", true);
+        String openMessage = getConfig().getString("activation.feedback.action-bar.open-message", "&b🎤 Listening...");
+        String closeMessage = getConfig().getString("activation.feedback.action-bar.close-message", "");
 
-        final boolean soundEnabled = getConfig().getBoolean("activation.feedback.sound.enabled", true);
-        final String openSound = getConfig().getString("activation.feedback.sound.open-sound", "minecraft:block.note_block.pling");
-        final float openVolume = (float) getConfig().getDouble("activation.feedback.sound.open-volume", 0.5);
-        final float openPitch = (float) getConfig().getDouble("activation.feedback.sound.open-pitch", 1.8);
-        final String closeSound = getConfig().getString("activation.feedback.sound.close-sound", "minecraft:block.note_block.bass");
-        final float closeVolume = (float) getConfig().getDouble("activation.feedback.sound.close-volume", 0.4);
-        final float closePitch = (float) getConfig().getDouble("activation.feedback.sound.close-pitch", 0.8);
+        boolean soundEnabled = getConfig().getBoolean("activation.feedback.sound.enabled", true);
+        String openSound = getConfig().getString("activation.feedback.sound.open-sound", "minecraft:block.note_block.pling");
+        float openVolume = (float) getConfig().getDouble("activation.feedback.sound.open-volume", 0.5);
+        float openPitch = (float) getConfig().getDouble("activation.feedback.sound.open-pitch", 1.8);
+        String closeSound = getConfig().getString("activation.feedback.sound.close-sound", "minecraft:block.note_block.bass");
+        float closeVolume = (float) getConfig().getDouble("activation.feedback.sound.close-volume", 0.4);
+        float closePitch = (float) getConfig().getDouble("activation.feedback.sound.close-pitch", 0.8);
 
         return new CueSettings(actionBarEnabled, soundEnabled, openMessage, closeMessage,
                 openSound, openVolume, openPitch, closeSound, closeVolume, closePitch);
     }
 
-    /**
-     * Thread-safe: recognized speech from any thread is marshalled onto the main thread before
-     * firing {@link VoiceWordSpokenEvent}.
-     */
-    public void handleRecognizedSpeech(@NotNull final Player player, @NotNull final String keyword, final float confidence) {
+    public void handleRecognizedSpeech(Player player, String keyword, float confidence) {
         if (!getServer().isPrimaryThread()) {
             getServer().getScheduler().runTask(this, () -> handleRecognizedSpeech(player, keyword, confidence));
             return;
         }
-        if (!player.isOnline()) {
+        if (!player.isOnline() || !accessPolicy.canUse(player)) {
             return;
         }
 
-        final VoiceWordSpokenEvent event = new VoiceWordSpokenEvent(player, keyword, confidence);
+        KeywordDefinition definition = keywordRegistry.find(keyword).orElse(null);
+        if (definition != null) {
+            if (confidence < definition.minConfidence()) {
+                if (debugLevel >= 1) {
+                    getLogger().info(String.format(Locale.ROOT,
+                            "[Transcribe debug] '%s' ignored for %s: confidence %.2f is below min-confidence %.2f in keywords/%s.yml",
+                            keyword, player.getName(), confidence, definition.minConfidence(), definition.id()));
+                }
+                return;
+            }
+            if (!player.hasPermission(definition.permission())) {
+                return;
+            }
+            boolean bypassCooldown = player.hasPermission("transcribe.bypass.cooldown");
+            if (!bypassCooldown && cooldowns.remainingMillis(player.getUniqueId(), definition.id()) > 0) {
+                return;
+            }
+            VoiceWordSpokenEvent kwEvent = new VoiceWordSpokenEvent(player, definition.word(), confidence);
+            getServer().getPluginManager().callEvent(kwEvent);
+            if (!kwEvent.isCancelled()) {
+                if (!bypassCooldown) {
+                    cooldowns.start(player.getUniqueId(), definition.id(), definition.cooldown());
+                }
+                actionRunner.runCommands(player, definition, definition.actions().executor(),
+                        definition.actions().commands(), keyword, confidence);
+                runHooks(player, definition, keyword, confidence);
+            }
+            return;
+        }
+
+        VoiceWordSpokenEvent event = new VoiceWordSpokenEvent(player, keyword, confidence);
         getServer().getPluginManager().callEvent(event);
         if (event.isCancelled()) {
             return;
@@ -225,70 +287,80 @@ public final class TranscribePlugin extends JavaPlugin {
         dispatchConfiguredCommands(player, keyword);
     }
 
-    @Override
-    public boolean onCommand(@NotNull final CommandSender sender, @NotNull final Command command,
-                              @NotNull final String label, @NotNull final String[] args) {
-        if (!command.getName().equalsIgnoreCase("transcribe")) {
-            return false;
+    private void runHooks(Player player, KeywordDefinition definition,
+                          String spoken, float confidence) {
+        for (KeywordDefinition.HookConfig hookConfig : definition.hooks().values()) {
+            if (!hookConfig.enabled()) {
+                continue;
+            }
+            PluginHook hook = hookRegistry.resolve(hookConfig).orElse(null);
+            if (hook == null || !hook.isAvailable(getServer())) {
+                continue;
+            }
+            try {
+                hook.execute(new HookInvocation(player, definition, spoken, confidence, hookConfig, actionRunner));
+            } catch (RuntimeException e) {
+                getLogger().log(Level.WARNING, "Hook '" + hookConfig.id() + "' failed for keyword '"
+                        + definition.word() + "'", e);
+            }
         }
-        if (args.length != 1 || !args[0].equalsIgnoreCase("reload")) {
-            sender.sendMessage("Usage: /" + label + " reload");
-            return true;
-        }
-        if (!sender.hasPermission("transcribe.reload")) {
-            sender.sendMessage("You do not have permission to do that.");
-            return true;
-        }
-
-        reload(sender);
-        return true;
     }
 
-    /**
-     * Builds the replacement engine and activation manager against the reloaded config before
-     * tearing anything down, so a bad config leaves the previous working setup untouched.
-     */
-    private void reload(@NotNull final CommandSender sender) {
+    private boolean isBlocked(Player player) {
+        return accessPolicy == null || !accessPolicy.canUse(player);
+    }
+
+    private void logKeywordProblems(KeywordRegistry.Snapshot snapshot) {
+        snapshot.problems().forEach(problem -> getLogger().warning("keywords/" + problem));
+        hookRegistry.validate(snapshot, getLogger());
+    }
+
+    public void reloadKeywords(CommandSender sender) {
+        reload(sender);
+    }
+
+    public void reload(CommandSender sender) {
         reloadConfig();
 
         this.debugLevel = getConfig().getInt("debug.level", 0);
         this.audioListener.setDebugLevel(debugLevel);
 
-        final CueSettings newCues;
+        CueSettings newCues;
         try {
             newCues = buildCueSettings();
-        } catch (final IllegalArgumentException badCueConfig) {
-            getLogger().log(Level.SEVERE, "Reload failed due to invalid activation.feedback configuration - "
-                    + "keeping the previous configuration running.", badCueConfig);
-            sender.sendMessage("Reload failed: " + badCueConfig.getMessage() + " (see console; previous configuration is still running)");
+        } catch (IllegalArgumentException e) {
+            getLogger().log(Level.SEVERE, "Reload failed (activation.feedback), keeping old config", e);
+            sender.sendMessage("Reload failed: " + e.getMessage());
             return;
         }
         this.audioListener.setCueSettings(newCues);
 
-        final SpeechRecognitionEngine newEngine;
+        KeywordRegistry.Snapshot newKeywords = keywordRegistry.scan();
+
+        SpeechRecognitionEngine newEngine;
         try {
-            newEngine = buildConfiguredEngine();
-        } catch (final Exception e) {
-            getLogger().log(Level.SEVERE, "Reload failed while building the speech recognition engine - "
-                    + "keeping the previous engine running.", e);
-            sender.sendMessage("Reload failed: " + e.getMessage() + " (see console; previous engine is still running)");
+            newEngine = buildConfiguredEngine(newKeywords);
+        } catch (Exception e) {
+            getLogger().log(Level.SEVERE, "Reload failed, couldn't build engine", e);
+            sender.sendMessage("Reload failed: " + e.getMessage());
             return;
         }
 
-        final ActivationManager newActivationManager;
+        ActivationManager newActivationManager;
         try {
             newActivationManager = buildActivationManager();
-        } catch (final IllegalArgumentException badConfig) {
-            newEngine.shutdown(); // don't leak the engine we just built but won't use
-            getLogger().log(Level.SEVERE, "Reload failed due to invalid activation configuration - "
-                    + "keeping the previous configuration running.", badConfig);
-            sender.sendMessage("Reload failed: " + badConfig.getMessage() + " (see console; previous configuration is still running)");
+        } catch (IllegalArgumentException e) {
+            newEngine.shutdown();
+            getLogger().log(Level.SEVERE, "Reload failed (activation)", e);
+            sender.sendMessage("Reload failed: " + e.getMessage());
             return;
         }
 
-        final SpeechRecognitionEngine oldEngine = this.speechEngine;
-        final ActivationManager oldActivationManager = this.activationManager;
+        SpeechRecognitionEngine oldEngine = this.speechEngine;
+        ActivationManager oldActivationManager = this.activationManager;
 
+        this.keywordRegistry.install(newKeywords);
+        logKeywordProblems(newKeywords);
         this.speechEngine = newEngine;
         this.activationManager = newActivationManager;
         this.activationManager.register();
@@ -301,25 +373,26 @@ public final class TranscribePlugin extends JavaPlugin {
             oldEngine.shutdown();
         }
 
-        getLogger().info("Configuration reloaded. debug-level=" + debugLevel);
-        sender.sendMessage("Transcribe configuration reloaded.");
+        getLogger().info("Configuration reloaded. keywords=" + newKeywords.byId().size() + " debug-level=" + debugLevel);
+        sender.sendMessage("Transcribe reloaded: " + newKeywords.grammar().size() + " spoken form(s) active, "
+                + newKeywords.disabledCount() + " disabled keyword(s), " + newKeywords.problems().size() + " problem(s).");
+        newKeywords.problems().stream().limit(5).forEach(p -> sender.sendMessage(" - " + p));
     }
 
-    // Must only be called on the main thread.
-    private void dispatchConfiguredCommands(@NotNull final Player player, @NotNull final String keyword) {
+    // main thread only
+    private void dispatchConfiguredCommands(Player player, String keyword) {
         if (consoleCommandTemplates.isEmpty()) {
             return;
         }
-        final ConsoleCommandSender console = getServer().getConsoleSender();
-        for (final String template : consoleCommandTemplates) {
-            final String resolved = template
+        ConsoleCommandSender console = getServer().getConsoleSender();
+        for (String template : consoleCommandTemplates) {
+            String resolved = template
                     .replace("%player%", player.getName())
                     .replace("%keyword%", keyword);
             getServer().dispatchCommand(console, resolved);
         }
     }
 
-    @NotNull
     public SpeechRecognitionEngine getSpeechEngine() {
         if (speechEngine == null) {
             throw new IllegalStateException("Transcribe has not finished enabling yet.");
@@ -327,25 +400,22 @@ public final class TranscribePlugin extends JavaPlugin {
         return speechEngine;
     }
 
-    // Captures the VoicechatApi reference, and subscribes the audio listener to microphone
-    // packets - registerEvents is the *only* place SVC allows event registration, per its own
-    // plugin API contract.
+    // SVC only lets you register events from inside registerEvents()
     private final class TranscribeVoicechatHook implements VoicechatPlugin {
 
         @Override
-        @NotNull
         public String getPluginId() {
             return VOICECHAT_HOOK_PLUGIN_ID;
         }
 
         @Override
-        public void initialize(@NotNull final VoicechatApi api) {
+        public void initialize(VoicechatApi api) {
             voicechatApi = api;
             getLogger().info("Simple Voice Chat API handshake complete.");
         }
 
         @Override
-        public void registerEvents(@NotNull final EventRegistration registration) {
+        public void registerEvents(EventRegistration registration) {
             registration.registerEvent(MicrophonePacketEvent.class, audioListener::onMicrophonePacket);
         }
     }

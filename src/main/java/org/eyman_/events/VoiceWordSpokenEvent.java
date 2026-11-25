@@ -6,10 +6,7 @@ import org.bukkit.event.Event;
 import org.bukkit.event.HandlerList;
 import org.jetbrains.annotations.NotNull;
 
-/**
- * Fired on the main thread when a keyword is transcribed. Cancelling prevents the downstream
- * spell-cast. STT worker threads must schedule this event onto the main thread first.
- */
+/** Fired on the main thread when a keyword is heard. Cancel it to stop the actions. */
 public final class VoiceWordSpokenEvent extends Event implements Cancellable {
 
     private static final HandlerList HANDLERS = new HandlerList();
@@ -19,7 +16,7 @@ public final class VoiceWordSpokenEvent extends Event implements Cancellable {
     private final float confidence;
     private boolean cancelled;
 
-    public VoiceWordSpokenEvent(@NotNull final Player player, @NotNull final String keyword, final float confidence) {
+    public VoiceWordSpokenEvent(@NotNull Player player, @NotNull String keyword, float confidence) {
         super(false);
         this.player = player;
         this.keyword = keyword;
@@ -47,7 +44,7 @@ public final class VoiceWordSpokenEvent extends Event implements Cancellable {
     }
 
     @Override
-    public void setCancelled(final boolean cancel) {
+    public void setCancelled(boolean cancel) {
         this.cancelled = cancel;
     }
 

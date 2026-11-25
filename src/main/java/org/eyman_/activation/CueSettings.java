@@ -3,19 +3,16 @@ package org.eyman_.activation;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.SoundCategory;
 import org.bukkit.entity.Player;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
-import java.util.Objects;
 
 public record CueSettings(boolean actionBarEnabled,
                            boolean soundEnabled,
-                           @Nullable String openMessage,
-                           @Nullable String closeMessage,
-                           @Nullable String openSound,
+                           String openMessage,
+                           String closeMessage,
+                           String openSound,
                            float openVolume,
                            float openPitch,
-                           @Nullable String closeSound,
+                           String closeSound,
                            float closeVolume,
                            float closePitch) {
 
@@ -28,19 +25,16 @@ public record CueSettings(boolean actionBarEnabled,
         }
     }
 
-    // Plays the configured open-window cue for {@code player}. Must be called on the main thread.
-    public void playOpenCue(@NotNull final Player player) {
+    public void playOpenCue(Player player) {
         apply(player, openMessage, openSound, openVolume, openPitch);
     }
 
-    // Plays the configured close-window cue for {@code player}. Must be called on the main thread.
-    public void playCloseCue(@NotNull final Player player) {
+    public void playCloseCue(Player player) {
         apply(player, closeMessage, closeSound, closeVolume, closePitch);
     }
 
-    private void apply(@NotNull final Player player, @Nullable final String message,
-                        @Nullable final String sound, final float volume, final float pitch) {
-        Objects.requireNonNull(player, "player");
+    private void apply(Player player, String message,
+                        String sound, float volume, float pitch) {
 
         if (actionBarEnabled && message != null && !message.isBlank()) {
             player.sendActionBar(LegacyComponentSerializer.legacyAmpersand().deserialize(message));
