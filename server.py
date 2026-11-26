@@ -1,46 +1,12 @@
 #!/usr/bin/env python3
-"""Transcribe external STT reference server.
+"""Reference STT server for Transcribe's EXTERNAL engine mode.
 
-Standalone WebSocket server demonstrating the wire protocol that
-``org.eyman_.engine.ExternalWebSocketEngine`` (Java, running inside the
-Paper server) speaks when ``engine.mode: EXTERNAL`` is selected in
-Transcribe' ``config.yml``.
+Protocol is described in the README. One segment at a time per connection:
+a "start" text frame, binary PCM frames, then an "end" text frame. Replies
+are {"requestId", "text", "confidence"} or {"requestId", "error"}.
 
-Wire protocol (one connection carries many sequential segments)
------------------------------------------------------------------
-    Client -> Server   text frame   {"type": "start", "requestId": "...",
-                                      "playerId": "...", "sampleRate": 16000}
-    Client -> Server   binary frame raw 16-bit little-endian mono PCM samples
-                                     (one or more binary frames per segment)
-    Client -> Server   text frame   {"type": "end", "requestId": "..."}
-
-    Server -> Client   text frame   {"requestId": "...", "text": "fire",
-                                      "confidence": 0.94}
-                          - or, on failure -
-                        text frame   {"requestId": "...", "error": "..."}
-
-``text`` is an empty string (never omitted) when no in-grammar keyword was
-recognized - that is a normal, successful result, not an error.
-
-This reference implementation processes at most one segment at a time per
-connection (a ``start`` immediately followed by binary audio frames and a
-matching ``end``), which is exactly the sequence the bundled Java client
-issues per request. It does **not** attempt to demultiplex multiple
-concurrently in-flight segments sharing a single connection, since incoming
-binary frames carry no requestId of their own to disambiguate them by -
-concurrent players are instead served by concurrent *connections*, which
-``websockets`` (and this server) handle natively. If you need true
-same-connection interleaving, embed the requestId as a small header on every
-binary frame on both ends.
-
-Requires Python 3.11+, the ``websockets`` package, and the ``vosk`` package
-plus an unpacked Vosk model directory (see --model below).
-
-Usage
------
     pip install websockets vosk
-    python3 server.py --model /path/to/vosk-model-small-en-us \
-        --grammar fire,light,ice --host 0.0.0.0 --port 2700
+    python3 server.py --model /path/to/vosk-model-small-en-us-0.15 --grammar fire,light,ice
 """
 
 from __future__ import annotations
@@ -58,9 +24,7 @@ from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger("transcribe.server")
 
-# Sentinel Vosk emits for audio outside the constrained grammar; always
-# normalized away to an empty ("no keyword recognized") result, mirroring
-# InternalVoskEngine's behavior on the Java side.
+# what vosk returns for anything outside the grammar
 UNKNOWN_TOKEN = "[unk]"
 
 DEFAULT_SAMPLE_RATE_HZ = 16_000
@@ -69,8 +33,6 @@ DEFAULT_PORT = 2700
 
 @dataclass
 class ServerConfig:
-    """Immutable-in-spirit bundle of everything the recognition path needs."""
-
     model: vosk.Model
     grammar_json: str
     allowed_keywords: frozenset[str]
@@ -79,8 +41,6 @@ class ServerConfig:
 
 @dataclass
 class PendingSegment:
-    """Accumulator for one in-flight start/binary.../end sequence."""
-
     request_id: str
     player_id: str | None
     sample_rate_hz: int
@@ -88,8 +48,6 @@ class PendingSegment:
 
 
 def build_grammar_json(words: list[str]) -> tuple[str, frozenset[str]]:
-    """Normalizes a word list into the JSON array Vosk expects, plus the set
-    of keywords that should be treated as valid (non-[unk]) results."""
     normalized = sorted({w.strip().lower() for w in words if w.strip()})
     if not normalized:
         raise ValueError("grammar word list must not be empty")
@@ -99,16 +57,8 @@ def build_grammar_json(words: list[str]) -> tuple[str, frozenset[str]]:
 
 
 def recognize_blocking(config: ServerConfig, segment: PendingSegment) -> tuple[str, float]:
-    """Runs Vosk recognition to completion. Blocking/CPU-bound - always call
-    this via ``asyncio.to_thread`` from the event loop, never directly.
-
-    A fresh ``KaldiRecognizer`` is created per segment. Recognizers are
-    stateful/streaming and not safe to share across concurrent segments, but
-    ``vosk.Model`` instances are safe to spawn many recognizers from
-    concurrently - so per-segment recognizers give full thread safety across
-    simultaneously-processing connections without any explicit locking, the
-    same strategy ``InternalVoskEngine`` uses on the Java side.
-    """
+    # blocking, call through asyncio.to_thread
+    # new recognizer per segment, they aren't shareable (the Model is)
     recognizer = vosk.KaldiRecognizer(config.model, segment.sample_rate_hz, config.grammar_json)
     recognizer.SetWords(True)
 
@@ -155,7 +105,7 @@ async def handle_end(
 
     try:
         text, confidence = await asyncio.to_thread(recognize_blocking, config, segment)
-    except Exception as exc:  # noqa: BLE001 - reported to the client, not swallowed
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Recognition failed for request %s", segment.request_id)
         await send_error(connection, segment.request_id, f"recognition failed: {exc}")
         return
@@ -223,7 +173,6 @@ async def connection_handler(config: ServerConfig, connection: ServerConnection)
                     logger.warning("Ignoring text frame with unknown type=%r from %s", msg_type, peer)
 
             else:
-                # Binary frame: raw PCM audio belonging to the current segment.
                 if active_segment is None:
                     logger.warning("Dropping binary audio frame from %s with no active segment", peer)
                     continue
@@ -241,7 +190,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--grammar",
         default="fire,light,ice",
-        help="Comma-separated constrained vocabulary, matching engine.internal.grammar in config.yml",
+        help="Comma-separated words, same as engine.internal.grammar in config.yml",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Interface to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Port to bind (default: {DEFAULT_PORT})")
@@ -249,7 +198,7 @@ def parse_args() -> argparse.Namespace:
         "--sample-rate",
         type=int,
         default=DEFAULT_SAMPLE_RATE_HZ,
-        help=f"Fallback sample rate if a 'start' message omits sampleRate (default: {DEFAULT_SAMPLE_RATE_HZ})",
+        help=f"Sample rate if start message has none (default: {DEFAULT_SAMPLE_RATE_HZ})",
     )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
@@ -287,15 +236,14 @@ async def run_server() -> None:
         try:
             loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:
-            # add_signal_handler is unavailable on some platforms (e.g. Windows);
-            # Ctrl+C still raises KeyboardInterrupt, which is handled below.
+            # windows
             pass
 
     async with serve(
         lambda connection: connection_handler(config, connection),
         args.host,
         args.port,
-        max_size=None,  # audio segments can legitimately exceed the default 1MiB cap
+        max_size=None,  # default 1MiB cap is too small for audio
     ):
         logger.info("Transcribe external STT server listening on ws://%s:%d", args.host, args.port)
         await stop_event.wait()
